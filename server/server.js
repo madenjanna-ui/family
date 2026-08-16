@@ -11,13 +11,48 @@ const DATA_FILE = path.join(__dirname, "data", "family.json");
 function defaultDatabase() {
     return { version: 3, users: [], globalChat: [], privateChats: {}, sessions: {}, reads: {}, presence: {} };
 }
+
+function createDefaultAdmin() {
+    return {
+        id: 1,
+        name: "Денис",
+        login: "admin",
+        passwordHash: hashPassword("admin"),
+        gender: "male",
+        avatar: "",
+        role: "admin"
+    };
+}
 function loadDatabase() {
     try {
-        if (!fs.existsSync(DATA_FILE)) { const db = defaultDatabase(); saveDatabase(db); return db; }
-        const db = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-        db.version = Math.max(Number(db.version)||1,3); db.users ||= []; db.globalChat ||= []; db.privateChats ||= {}; db.sessions ||= {}; db.reads ||= {}; db.presence ||= {}; db.reads ||= {}; db.presence ||= {};
+        const db = fs.existsSync(DATA_FILE)
+            ? JSON.parse(fs.readFileSync(DATA_FILE, "utf8"))
+            : defaultDatabase();
+
+        db.version = Math.max(Number(db.version) || 1, 3);
+        db.users ||= [];
+        db.globalChat ||= [];
+        db.privateChats ||= {};
+        db.sessions ||= {};
+        db.reads ||= {};
+        db.presence ||= {};
+
+        // First-run bootstrap: if the persistent database has no users,
+        // create the initial family administrator. Existing data is never replaced.
+        if (db.users.length === 0) {
+            db.users.push(createDefaultAdmin());
+            saveDatabase(db);
+            console.log("Created initial admin account: admin / admin");
+        }
+
         return db;
-    } catch (e) { console.error("Database load error:", e.message); return defaultDatabase(); }
+    } catch (e) {
+        console.error("Database load error:", e.message);
+        const db = defaultDatabase();
+        db.users.push(createDefaultAdmin());
+        saveDatabase(db);
+        return db;
+    }
 }
 function saveDatabase(db) {
     fs.mkdirSync(path.dirname(DATA_FILE), {recursive:true});
