@@ -1,5 +1,4 @@
-const FAMILY_API_BASE =
-    (window.FAMILY_CONFIG?.API_BASE || "");
+const FAMILY_API_BASE = "https://family-server-production-8db2.up.railway.app";
 
 const API = {
     token: localStorage.getItem("FamilyToken") || "",
