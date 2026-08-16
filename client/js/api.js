@@ -1,4 +1,5 @@
-const FAMILY_API_BASE = (window.FAMILY_CONFIG && window.FAMILY_CONFIG.API_BASE || "").replace(/\\/$/,"");
+const FAMILY_API_BASE =
+    (window.FAMILY_CONFIG?.API_BASE || "").replace(/\/$/, "");
 
 const API = {
     token: localStorage.getItem("FamilyToken") || "",
