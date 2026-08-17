@@ -227,24 +227,33 @@ const App = {
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.openUsers()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}</div>`;
         this.scrollMessages("privateMessages");this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));this.hydrateLocalAudio("privateMessages");
     },
-    async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text);input.value="";this.cosmicSound("send");}catch(e){alert(e.message);}},
+    async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text);input.value="";this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
 
     async openGlobalChat(){
         let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);try{await API.markRead("global","global");}catch(e){}document.body.dataset.privateUser="";
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>🌌 Семья</h1></div><div class="messages" id="messages">${messages.map(m=>this.messageHtml(m,true)).join("")}</div>${this.chatFooter("global",null,"Напишите семье...")}</div>`;
         this.scrollMessages("messages");this.bindChatInput("messageInput",()=>this.sendGlobal());this.hydrateLocalAudio("messages");
     },
-    async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendGlobal(text);input.value="";this.cosmicSound("send");}catch(e){alert(e.message);}},
+    async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendGlobal(text);input.value="";this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
 
     chatFooter(scope,id,placeholder){return `<div class="footer"><button class="tool-btn" id="micBtn" title="Голосовое сообщение" onclick="App.toggleRecording('${scope}',${id===null?"null":id})">🎙️</button><input id="${scope==="global"?"messageInput":"privateInput"}" placeholder="${placeholder}"><button class="primary send-btn" onclick="${scope==="global"?"App.sendGlobal()":"App.sendPrivate("+id+")"}">➤</button></div>`;},
     bindChatInput(id,fn){const input=document.getElementById(id);if(input){input.focus();input.onkeydown=e=>{if(e.key==="Enter")fn();};}},
     scrollMessages(id){const list=document.getElementById(id);if(list)list.scrollTop=list.scrollHeight;},
 
+    linkify(text){
+        return this.esc(text).replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
+    },
+
+    hideKeyboard(){
+        const el=document.activeElement;
+        if(el && typeof el.blur==="function") el.blur();
+    },
+
     messageHtml(m,global,otherId){
         const mine=Number(m.authorId)===Number(Auth.currentUser.id),scope=global?"global":"private",key=global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId),reactions=Object.entries(m.reactions||{}).filter(([,ids])=>ids.length);
         const hasAudio=m.type==="audio"&&m.audio;
         const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
-        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div>${this.esc(m.text||"")}</div>`;
+        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div>${this.linkify(m.text||"")}</div>`;
         return `<div class="message ${mine?"me":"other"}">${!mine?this.avatarHtml({avatar:m.avatar,gender:m.gender},34):""}<div class="bubble">${!mine?`<div class="author">${this.esc(m.author)}</div>`:""}${media}<div class="time">${new Date(m.time).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}</div><div class="reaction-line">${reactions.map(([e,ids])=>`<button onclick="App.react('${scope}','${key}',${m.id},'${e}')">${e} ${ids.length}</button>`).join("")}<button class="add-reaction" onclick="App.showReactions(this,'${scope}','${key}',${m.id})">＋</button></div></div></div>`;
     },
     formatDuration(s){s=Math.round(Number(s)||0);return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;},
