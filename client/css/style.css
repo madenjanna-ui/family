@@ -41,3 +41,250 @@ body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.20;ba
 :root[data-theme="warm"][data-mode="system"]{--bg1:#24151a;--bg2:#201c22;--surface:rgba(49,34,37,.82);--surface-strong:rgba(58,40,42,.94);--line:rgba(255,178,145,.14);--text:#fff5f1;--muted:rgba(255,245,241,.64);--bubble-me:rgba(190,92,82,.34);--header:rgba(35,22,28,.84)}
 :root[data-theme="fresh"][data-mode="system"]{--bg1:#081b1c;--bg2:#10192b;--surface:rgba(19,40,42,.82);--surface-strong:rgba(24,48,50,.94);--line:rgba(105,235,210,.14);--text:#effffc;--muted:rgba(239,255,252,.64);--bubble-me:rgba(26,143,127,.34);--header:rgba(8,28,30,.84)}
 }
+
+/* ==========================================
+   Family v5.1 Cosmic polish
+   Только визуальные улучшения
+   ========================================== */
+
+
+body {
+    overflow-x:hidden;
+}
+
+
+/* Космическое свечение */
+
+body:after {
+    content:"";
+    position:fixed;
+    inset:-50%;
+    z-index:-1;
+    background:
+      radial-gradient(circle at 20% 20%,
+      rgba(120,100,255,.18),
+      transparent 30%),
+      radial-gradient(circle at 80% 70%,
+      rgba(80,180,255,.14),
+      transparent 28%);
+
+    animation:
+      spaceMove 18s ease-in-out infinite;
+
+}
+
+
+@keyframes spaceMove {
+
+    0%,100%{
+        transform:translate(0,0);
+    }
+
+    50%{
+        transform:translate(-30px,20px);
+    }
+
+}
+
+
+
+/* Более красивые карточки */
+
+.card,
+.dialog-card,
+.profile-card,
+.settings-card {
+
+    backdrop-filter:blur(20px);
+
+    transition:
+    transform .25s ease,
+    box-shadow .25s ease;
+
+}
+
+
+.card:active,
+.dialog-card:active {
+
+    transform:scale(.97);
+
+}
+
+
+
+/* Сообщения */
+
+.bubble {
+
+    animation:
+    messageIn .25s ease;
+
+}
+
+
+@keyframes messageIn {
+
+    from {
+
+        opacity:0;
+        transform:
+        translateY(10px)
+        scale(.96);
+
+    }
+
+    to {
+
+        opacity:1;
+        transform:
+        translateY(0)
+        scale(1);
+
+    }
+
+}
+
+
+
+/* Кнопки */
+
+.primary,
+.send-btn {
+
+    position:relative;
+    overflow:hidden;
+
+}
+
+
+.primary:after,
+.send-btn:after {
+
+    content:"";
+
+    position:absolute;
+
+    width:0;
+    height:0;
+
+    background:
+    rgba(255,255,255,.35);
+
+    border-radius:50%;
+
+    transform:translate(-50%,-50%);
+
+    transition:.4s;
+
+}
+
+
+.primary:active:after,
+.send-btn:active:after {
+
+    width:200px;
+    height:200px;
+
+}
+
+
+
+/* Аватары */
+
+.avatar {
+
+    box-shadow:
+    0 8px 25px rgba(80,60,180,.25);
+
+}
+
+
+.avatar img {
+
+    transition:.3s;
+
+}
+
+
+.avatar img:hover {
+
+    transform:scale(1.08);
+
+}
+
+
+
+/* Поле сообщения */
+
+.footer {
+
+    border-radius:
+    25px 25px 0 0;
+
+}
+
+
+
+/* iPhone safe */
+
+@supports(padding:max(0px)) {
+
+.footer {
+
+padding-bottom:
+max(
+12px,
+env(safe-area-inset-bottom)
+);
+
+}
+
+}
+
+
+
+/* Небольшое свечение логотипа */
+
+.logo,
+.brand-icon {
+
+filter:
+drop-shadow(
+0 0 15px
+rgba(100,130,255,.45)
+);
+
+}
+
+
+
+/* Плавное появление страниц */
+
+.page {
+
+animation:
+pageShow .35s ease;
+
+}
+
+
+@keyframes pageShow {
+
+from {
+
+opacity:0;
+transform:
+translateY(8px);
+
+}
+
+to {
+
+opacity:1;
+transform:
+translateY(0);
+
+}
+
+}
