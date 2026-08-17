@@ -3,14 +3,28 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const WebSocket = require("ws");
+const webpush = require("web-push");
 
 const HOST = "0.0.0.0";
 const PORT = 8000;
 const DATA_FILE = path.join(__dirname, "data", "family.json");
 
 function defaultDatabase() {
-    return { version: 3, users: [], globalChat: [], privateChats: {}, sessions: {}, reads: {}, presence: {} };
+    return { version: 5, users: [], globalChat: [], privateChats: {}, sessions: {}, reads: {}, presence: {}, pushSubscriptions: {} };
 }
+
+const VAPID_FILE = path.join(__dirname, "data", "vapid.json");
+function loadVapid() {
+    try {
+        if (fs.existsSync(VAPID_FILE)) return JSON.parse(fs.readFileSync(VAPID_FILE, "utf8"));
+    } catch (e) { console.error("VAPID load error:", e.message); }
+    const keys = webpush.generateVAPIDKeys();
+    fs.mkdirSync(path.dirname(VAPID_FILE), {recursive:true});
+    fs.writeFileSync(VAPID_FILE, JSON.stringify(keys, null, 2), "utf8");
+    return keys;
+}
+const VAPID = loadVapid();
+webpush.setVapidDetails("mailto:family@example.com", VAPID.publicKey, VAPID.privateKey);
 
 function createDefaultAdmin() {
     return {
@@ -29,13 +43,14 @@ function loadDatabase() {
             ? JSON.parse(fs.readFileSync(DATA_FILE, "utf8"))
             : defaultDatabase();
 
-        db.version = Math.max(Number(db.version) || 1, 3);
+        db.version = Math.max(Number(db.version) || 1, 5);
         db.users ||= [];
         db.globalChat ||= [];
         db.privateChats ||= {};
         db.sessions ||= {};
         db.reads ||= {};
         db.presence ||= {};
+        db.pushSubscriptions ||= {};
 
         // First-run bootstrap: if the persistent database has no users,
         // create the initial family administrator. Existing data is never replaced.
@@ -65,6 +80,30 @@ function nextId(c) { return c.length ? Math.max(...c.map(x => Number(x.id)||0))+
 function hashPassword(p) { return crypto.createHash("sha256").update(String(p)).digest("hex"); }
 function token() { return crypto.randomBytes(32).toString("hex"); }
 function publicUser(u) { return {id:u.id,name:u.name,login:u.login,gender:u.gender,role:u.role,avatar:u.avatar||""}; }
+function savePushSubscription(userId, subscription) {
+    if (!subscription || !subscription.endpoint) return;
+    db.pushSubscriptions[String(userId)] ||= [];
+    const list = db.pushSubscriptions[String(userId)];
+    const idx = list.findIndex(x => x.endpoint === subscription.endpoint);
+    if (idx >= 0) list[idx] = subscription; else list.push(subscription);
+    saveDatabase(db);
+}
+function removePushSubscription(userId, endpoint) {
+    const list = db.pushSubscriptions[String(userId)] || [];
+    db.pushSubscriptions[String(userId)] = list.filter(x => x.endpoint !== endpoint);
+    saveDatabase(db);
+}
+function pushToUsers(userIds, payload) {
+    const jobs=[];
+    for (const userId of userIds) {
+        for (const sub of (db.pushSubscriptions[String(userId)] || [])) {
+            jobs.push(webpush.sendNotification(sub, JSON.stringify(payload)).catch(err => {
+                if (err.statusCode === 404 || err.statusCode === 410) removePushSubscription(userId, sub.endpoint);
+            }));
+        }
+    }
+    Promise.allSettled(jobs).catch(()=>{});
+}
 function chatId(a,b) { return [Number(a),Number(b)].sort((x,y)=>x-y).join("_"); }
 function sendJson(res,status,data) {
     const body=JSON.stringify(data);
@@ -74,7 +113,7 @@ function sendJson(res,status,data) {
 function readBody(req) {
     return new Promise((resolve,reject)=>{
         let s="";
-        req.on("data",c=>{s+=c;if(s.length>1024*1024){req.destroy();reject(new Error("Request too large"));}});
+        req.on("data",c=>{s+=c;if(s.length>10*1024*1024){req.destroy();reject(new Error("Request too large"));}});
         req.on("end",()=>{try{resolve(s?JSON.parse(s):{});}catch{reject(new Error("Invalid JSON"));}});
         req.on("error",reject);
     });
@@ -113,6 +152,42 @@ function broadcast(msg) {
     const data=JSON.stringify(msg);
     wss.clients.forEach(c=>{if(c.readyState===WebSocket.OPEN)c.send(data);});
 }
+function newAudioId(){ return crypto.randomBytes(12).toString("hex"); }
+const AUDIO_TTL_MS = 48 * 60 * 60 * 1000;
+function prepareAudio(audio,pendingFor){
+    const now=Date.now();
+    return {
+        id:newAudioId(),
+        mime:String(audio.mime||"audio/mp4"),
+        data:String(audio.data||""),
+        duration:Number(audio.duration||0),
+        pendingFor:[...new Set((pendingFor||[]).map(Number).filter(Boolean))],
+        expiresAt:now+AUDIO_TTL_MS
+    };
+}
+function findMessageByAudio(audioId){
+    for(const m of db.globalChat){if(m.type==="audio"&&m.audio?.id===audioId)return {message:m,scope:"global",key:"global"};}
+    for(const [key,list] of Object.entries(db.privateChats)) for(const m of list){if(m.type==="audio"&&m.audio?.id===audioId)return {message:m,scope:"private",key};}
+    return null;
+}
+function finalizeAudio(message){
+    if(!message?.audio)return;
+    delete message.audio.data;
+    delete message.audio.pendingFor;
+    message.audio.cleanedAt=Date.now();
+}
+function cleanupTemporaryAudio(){
+    const now=Date.now(); let changed=false;
+    const clean=m=>{
+        if(m.type!=="audio"||!m.audio)return;
+        if(m.audio.expiresAt && Number(m.audio.expiresAt)<=now){finalizeAudio(m);changed=true;return;}
+        if(Array.isArray(m.audio.pendingFor) && m.audio.pendingFor.length===0 && m.audio.data){finalizeAudio(m);changed=true;}
+    };
+    db.globalChat.forEach(clean);Object.values(db.privateChats).forEach(list=>list.forEach(clean));
+    if(changed)saveDatabase(db);
+}
+setInterval(cleanupTemporaryAudio,10*60*1000);
+cleanupTemporaryAudio();
 function findMessage(chat,mId) { return chat.find(m=>Number(m.id)===Number(mId)); }
 
 function serveStatic(req,res) {
@@ -154,6 +229,13 @@ const server=http.createServer(async(req,res)=>{
             const u=authUser(req);if(!u){sendJson(res,401,{success:false});return;}
             sendJson(res,200,{success:true,user:publicUser(u)});return;
         }
+        if(req.method==="PUT"&&url.pathname==="/api/me"){
+            const u=authUser(req);if(!u){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+            if(body.name!==undefined){const name=String(body.name).trim();if(!name){sendJson(res,400,{success:false,error:"Имя не может быть пустым"});return;}u.name=name;}
+            if(body.gender!==undefined)u.gender=body.gender==="female"?"female":"male";
+            if(body.avatar!==undefined){const avatar=String(body.avatar||"");if(avatar.length>900000){sendJson(res,400,{success:false,error:"Аватар слишком большой"});return;}u.avatar=avatar;}
+            saveDatabase(db);sendJson(res,200,{success:true,user:publicUser(u)});return;
+        }
         if(req.method==="GET"&&url.pathname==="/api/users"){
             const u=authUser(req);if(!u){sendJson(res,401,{success:false});return;}
             sendJson(res,200,{success:true,users:db.users.map(u=>({
@@ -189,10 +271,25 @@ const server=http.createServer(async(req,res)=>{
             }
             if(req.method==="DELETE"){
                 if(id===admin.id){sendJson(res,400,{success:false,error:"Нельзя удалить текущего администратора"});return;}
-                db.users=db.users.filter(x=>x.id!==id);saveDatabase(db);sendJson(res,200,{success:true});return;
+                db.users=db.users.filter(x=>x.id!==id);
+                const scrubPending=m=>{if(m.type==="audio"&&Array.isArray(m.audio?.pendingFor)){m.audio.pendingFor=m.audio.pendingFor.filter(pid=>Number(pid)!==id);if(m.audio.pendingFor.length===0)finalizeAudio(m);}};
+                db.globalChat.forEach(scrubPending);Object.values(db.privateChats).forEach(list=>list.forEach(scrubPending));
+                saveDatabase(db);sendJson(res,200,{success:true});return;
             }
         }
 
+        if(req.method==="GET"&&url.pathname==="/api/push/public-key"){
+            sendJson(res,200,{success:true,publicKey:VAPID.publicKey});return;
+        }
+        if(req.method==="POST"&&url.pathname==="/api/push/subscribe"){
+            const u=authUser(req);if(!u){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+            if(!body.subscription || !body.subscription.endpoint){sendJson(res,400,{success:false,error:"Некорректная подписка"});return;}
+            savePushSubscription(u.id,body.subscription);sendJson(res,200,{success:true});return;
+        }
+        if(req.method==="POST"&&url.pathname==="/api/push/unsubscribe"){
+            const u=authUser(req);if(!u){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+            if(body.endpoint)removePushSubscription(u.id,String(body.endpoint));sendJson(res,200,{success:true});return;
+        }
         if(req.method==="GET"&&url.pathname==="/api/unread"){
             const u=authUser(req);if(!u){sendJson(res,401,{success:false});return;}
             const privateUnread={};
@@ -217,25 +314,6 @@ const server=http.createServer(async(req,res)=>{
             }
             saveDatabase(db);
             sendJson(res,200,{success:true});return;
-        }
-
-        if(req.method==="GET"&&url.pathname==="/api/unread"){
-            const u=authUser(req);
-            if(!u){sendJson(res,401,{success:false});return;}
-            db.reads ||= {};
-            db.reads[String(u.id)] ||= {global:0,private:{}};
-            db.reads[String(u.id)].private ||= {};
-            const globalRead=Number(db.reads[String(u.id)].global||0);
-            const globalCount=db.globalChat.filter(m=>Number(m.id)>globalRead && Number(m.authorId)!==Number(u.id)).length;
-            const privateCounts={};
-            for(const other of db.users){
-                if(Number(other.id)===Number(u.id)) continue;
-                const cid=chatId(u.id,other.id);
-                const read=Number(db.reads[String(u.id)].private[cid]||0);
-                privateCounts[String(other.id)]=(db.privateChats[cid]||[]).filter(m=>Number(m.id)>read && Number(m.authorId)!==Number(u.id)).length;
-            }
-            sendJson(res,200,{success:true,global:globalCount,private:privateCounts});
-            return;
         }
 
         if(req.method==="POST"&&url.pathname.startsWith("/api/read/")){
@@ -269,9 +347,20 @@ const server=http.createServer(async(req,res)=>{
         }
         if(req.method==="POST"&&url.pathname==="/api/messages/global"){
             const u=authUser(req);if(!u){sendJson(res,401,{success:false});return;}
-            const text=String(body.text||"").trim();if(!text){sendJson(res,400,{success:false,error:"Пустое сообщение"});return;}
-            const m={id:nextId(db.globalChat),authorId:u.id,author:u.name,text,time:new Date().toISOString(),reactions:{}};
-            db.globalChat.push(m);saveDatabase(db);broadcast({type:"global_message",message:m});sendJson(res,201,{success:true,message:m});return;
+            let m;
+            const text=String(body.text||"").trim();
+            if(text){
+                m={id:nextId(db.globalChat),authorId:u.id,author:u.name,text,time:new Date().toISOString(),reactions:{},type:"text",avatar:u.avatar||"",gender:u.gender};
+            } else if(body.audio && body.audio.data){
+                const audio=body.audio;
+                if(String(audio.data).length>8000000){sendJson(res,400,{success:false,error:"Голосовое сообщение слишком большое"});return;}
+                const recipients=db.users.filter(x=>Number(x.id)!==Number(u.id)).map(x=>Number(x.id));
+                m={id:nextId(db.globalChat),authorId:u.id,author:u.name,time:new Date().toISOString(),reactions:{},type:"audio",avatar:u.avatar||"",gender:u.gender,audio:prepareAudio(audio,recipients)};
+                if(!recipients.length) finalizeAudio(m);
+            } else {sendJson(res,400,{success:false,error:"Пустое сообщение"});return;}
+            db.globalChat.push(m);saveDatabase(db);broadcast({type:"global_message",message:m});
+            pushToUsers(db.users.filter(x=>Number(x.id)!==Number(u.id)).map(x=>x.id),{title:"😍 Семья",body:m.type==="audio"?`${u.name}: 🎙️ Голосовое сообщение`:`${u.name}: ${m.text}`,tag:"family-global",url:"./"});
+            sendJson(res,201,{success:true,message:m});return;
         }
 
         const pm=url.pathname.match(/^\/api\/messages\/private\/(\d+)$/);
@@ -282,11 +371,33 @@ const server=http.createServer(async(req,res)=>{
             const id=chatId(u.id,otherId);db.privateChats[id] ||= [];
             if(req.method==="GET"){sendJson(res,200,{success:true,messages:db.privateChats[id]||[]});return;}
             if(req.method==="POST"){
-                const text=String(body.text||"").trim();if(!text){sendJson(res,400,{success:false,error:"Пустое сообщение"});return;}
-                db.privateChats[id] ||= [];
-                const m={id:nextId(db.privateChats[id]),authorId:u.id,author:u.name,text,time:new Date().toISOString(),reactions:{}};
-                db.privateChats[id].push(m);saveDatabase(db);broadcast({type:"private_message",chatId:id,message:m});sendJson(res,201,{success:true,message:m});return;
+                let m;
+                const text=String(body.text||"").trim();
+                if(text){
+                    m={id:nextId(db.privateChats[id]),authorId:u.id,author:u.name,text,time:new Date().toISOString(),reactions:{},type:"text",avatar:u.avatar||"",gender:u.gender};
+                } else if(body.audio && body.audio.data){
+                    const audio=body.audio;
+                    if(String(audio.data).length>8000000){sendJson(res,400,{success:false,error:"Голосовое сообщение слишком большое"});return;}
+                    m={id:nextId(db.privateChats[id]),authorId:u.id,author:u.name,time:new Date().toISOString(),reactions:{},type:"audio",avatar:u.avatar||"",gender:u.gender,audio:prepareAudio(audio,[otherId])};
+                } else {sendJson(res,400,{success:false,error:"Пустое сообщение"});return;}
+                db.privateChats[id].push(m);saveDatabase(db);broadcast({type:"private_message",chatId:id,message:m});
+                pushToUsers([otherId],{title:`😍 ${u.name}`,body:m.type==="audio"?"🎙️ Голосовое сообщение":m.text,tag:`family-private-${id}`,url:"./"});
+                sendJson(res,201,{success:true,message:m});return;
             }
+        }
+
+        if(req.method==="POST"&&url.pathname==="/api/audio/ack"){
+            const u=authUser(req);if(!u){sendJson(res,401,{success:false});return;}
+            const audioId=String(body.audioId||"");
+            const found=findMessageByAudio(audioId);
+            if(!found){sendJson(res,404,{success:false,error:"Голосовое уже удалено"});return;}
+            const audio=found.message.audio;
+            if(Array.isArray(audio.pendingFor)){
+                audio.pendingFor=audio.pendingFor.filter(id=>Number(id)!==Number(u.id));
+                if(audio.pendingFor.length===0)finalizeAudio(found.message);
+                saveDatabase(db);
+            }
+            sendJson(res,200,{success:true,cleaned:!audio.data});return;
         }
 
         const react=url.pathname.match(/^\/api\/messages\/(global|private)\/([^/]+)\/(\d+)\/reaction$/);

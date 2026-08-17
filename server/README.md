@@ -1,32 +1,23 @@
-# Family Server
+# Family Server😍
 
-Node.js backend for Family😍.
+Node.js сервер для Family.
 
-## Local
-
-```text
-Start Server.bat
-```
-
-or:
-
+## Запуск
 ```bash
 npm install
 npm start
 ```
 
-The server listens on port 8000.
+Порт: `8000`.
 
-## Production
+## Persistent data
+`data/family.json` — пользователи, чаты, аватары, голосовые сообщения и подписки push.
+`data/vapid.json` — автоматически созданные VAPID-ключи Web Push. На Railway нужен persistent volume, чтобы ключ не менялся после redeploy.
 
-Run this backend on a VPS/cloud service with HTTPS/WSS.
-Do not expose the development server directly to the public internet without
-a reverse proxy, TLS, authentication hardening, backups and proper secret management.
+## Push
+Сервер использует стандартный Web Push через пакет `web-push`. Для iPhone приложение должно быть добавлено на Home Screen и разрешение на уведомления выдано через кнопку в Family.
 
-The database file is:
-
-```text
-data/family.json
-```
-
-It is ignored by Git.
+## Первый запуск
+Если база пустая, создаётся:
+- login: `admin`
+- password: `admin`
