@@ -1,15 +1,15 @@
 {
-  "name": "Family😍",
-  "short_name": "Family",
-  "id": "./",
-  "start_url": "./",
-  "scope": "./",
-  "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#f5efff",
-  "theme_color": "#7255d9",
-  "description": "Семейный мессенджер Family",
-  "icons": [
+  "name":"Family😍",
+  "short_name":"Family",
+  "id":"/family/",
+  "start_url":"/family/",
+  "scope":"/family/",
+  "display":"standalone",
+  "orientation":"portrait",
+  "background_color":"#0b1028",
+  "theme_color":"#10152f",
+  "description":"Семейный мессенджер Family",
+  "icons":[
     {"src":"assets/icon-180.png","sizes":"180x180","type":"image/png","purpose":"any maskable"},
     {"src":"assets/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
   ]
