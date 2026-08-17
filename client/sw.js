@@ -1,16 +1,16 @@
-const CACHE = "family-shell-v5";
+const CACHE = "family-shell-v6";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./css/style.css?v=12",
+  "./css/style.css?v=20",
   "./js/config.js?v=3",
-  "./js/api.js?v=12",
+  "./js/api.js?v=20",
   "./js/auth.js?v=10",
-  "./js/app.js?v=12",
+  "./js/app.js?v=20",
   "./assets/icon-180.png",
   "./assets/icon-512.png",
-  "./js/media.js?v=1"
+  "./js/media.js?v=2"
 ];
 
 self.addEventListener("install", event => {
