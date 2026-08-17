@@ -1,196 +1,57 @@
 const Auth = {
+    currentUser: null,
 
-    async start(){
-
-        const token = localStorage.getItem("FamilyToken");
-
-        if(token){
-
-            API.token = token;
-
-            try{
-
-                const me = await API.request("/api/me");
-
-                if(me.success){
-
-                    window.currentUser = me.user;
-
-                    showApp();
-
-                    return;
-                }
-
-            }catch(e){
-
-                console.log("Auto login failed");
-            }
+    async autoLogin() {
+        if (!API.token) return false;
+        try {
+            this.currentUser = await API.me();
+            return true;
+        } catch {
+            this.currentUser = null;
+            await API.logout();
+            return false;
         }
-
-
-        showLogin();
-
     },
 
-
-    async login(){
-
-        const loginInput =
-            document.getElementById("login");
-
-        const passwordInput =
-            document.getElementById("password");
-
-
-        const login =
-            loginInput.value.trim();
-
-        const password =
-            passwordInput.value;
-
-
-        const error =
-            document.getElementById("loginError");
-
-
-        error.innerHTML = "";
-
-
-        try{
-
-            const result =
-                await API.login(
-                    login,
-                    password
-                );
-
-
-            if(result.success){
-
-                localStorage.setItem(
-                    "FamilyToken",
-                    result.token
-                );
-
-
-                API.token =
-                    result.token;
-
-
-                window.currentUser =
-                    result.user;
-
-
-                showApp();
-
-            }else{
-
-                error.innerHTML =
-                    result.error ||
-                    "Ошибка входа";
-            }
-
-
-        }catch(e){
-
-            console.error(e);
-
-            error.innerHTML =
-                "Неверный логин или пароль";
+    async login(login,password) {
+        try {
+            this.currentUser = await API.login(login,password);
+            return true;
+        } catch {
+            this.currentUser = null;
+            return false;
         }
-
     },
 
+    async logout() {
+        await API.logout();
+        this.currentUser = null;
+    },
 
-    logout(){
+    isAdmin() {
+        return !!this.currentUser && this.currentUser.role === "admin";
+    },
 
-        localStorage.removeItem(
-            "FamilyToken"
-        );
-
-        location.reload();
-
+    async getUsers() { return API.users(); },
+    async getUserById(id) {
+        const users = await API.users();
+        return users.find(u => Number(u.id) === Number(id)) || null;
+    },
+    async createUser(name,login,password,gender) {
+        try {
+            const user = await API.createUser({name,login,password,gender});
+            return {success:true,user};
+        } catch(e) { return {success:false,error:e.message}; }
+    },
+    async updateUser(id,data) {
+        try {
+            const user = await API.updateUser(id,data);
+            if (this.currentUser && Number(this.currentUser.id) === Number(id)) this.currentUser = user;
+            return {success:true,user};
+        } catch(e) { return {success:false,error:e.message}; }
+    },
+    async deleteUser(id) {
+        try { await API.deleteUser(id); return {success:true}; }
+        catch(e) { return {success:false,error:e.message}; }
     }
-
 };
-
-
-
-function showLogin(){
-
-    const login =
-        document.getElementById(
-            "loginScreen"
-        );
-
-    const app =
-        document.getElementById(
-            "mainScreen"
-        );
-
-
-    if(login)
-        login.classList.add("active");
-
-
-    if(app)
-        app.classList.remove("active");
-
-}
-
-
-
-function showApp(){
-
-    const login =
-        document.getElementById(
-            "loginScreen"
-        );
-
-    const app =
-        document.getElementById(
-            "mainScreen"
-        );
-
-
-    if(login)
-        login.classList.remove("active");
-
-
-    if(app)
-        app.classList.add("active");
-
-
-    if(window.Chat){
-
-        Chat.start();
-
-    }
-
-}
-
-
-
-document.addEventListener(
-"DOMContentLoaded",
-()=>{
-
-
-    const btn =
-        document.getElementById(
-            "loginBtn"
-        );
-
-
-    if(btn){
-
-        btn.onclick =
-            ()=>Auth.login();
-
-    }
-
-
-    Auth.start();
-
-
-});
