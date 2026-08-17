@@ -11,6 +11,11 @@ const App = {
     notificationRegistration:null,
     appearanceTheme: localStorage.getItem("FamilyTheme") || "cosmic",
     appearanceMode: localStorage.getItem("FamilyMode") || "light",
+    fontFamily: localStorage.getItem("FamilyFont") || "system",
+    fontSize: Number(localStorage.getItem("FamilyFontSize") || 17),
+    usersCache: [],
+    replyTarget: null,
+    favorites: JSON.parse(localStorage.getItem("FamilyFavorites") || "[]"),
 
     async start() {
         this.applyAppearance();
@@ -33,19 +38,18 @@ const App = {
         this.ws = API.connectWS(msg => {
             if (msg.type === "global_message") {
                 if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) this.messageArrived(msg.message, true);
-                if (document.getElementById("messages")) this.openGlobalChat();
+                if (document.getElementById("messages")) this.refreshOpenChat(true);
             }
             if (msg.type === "private_message") {
                 if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) this.messageArrived(msg.message, false);
                 const otherId = Number(document.body.dataset.privateUser || 0);
-                if (otherId && this.getPrivateChatId(Auth.currentUser.id,otherId) === msg.chatId) this.openPrivateChat(otherId);
+                if (otherId && this.getPrivateChatId(Auth.currentUser.id,otherId) === msg.chatId) this.refreshOpenChat(false, otherId);
             }
-            if (msg.type === "reaction") {
-                if (document.getElementById("messages")) this.openGlobalChat();
-                if (document.getElementById("privateMessages")) {
-                    const otherId=Number(document.body.dataset.privateUser||0);
-                    if(otherId)this.openPrivateChat(otherId);
-                }
+            if (msg.type === "reaction" || msg.type === "message_updated" || msg.type === "message_deleted") {
+                const otherId=Number(document.body.dataset.privateUser||0);
+                if (msg.scope === "private" || msg.chatId) {
+                    if (otherId && this.getPrivateChatId(Auth.currentUser.id,otherId) === (msg.key || msg.chatId)) this.refreshOpenChat(false,otherId);
+                } else if (document.getElementById("messages")) this.refreshOpenChat(true);
             }
         });
     },
@@ -60,6 +64,7 @@ const App = {
                 await API.audioAck(global?"global":"private",key,message.id,message.audio.id);
             }catch(e){console.warn("Audio delivery:",e);}
         }
+        try { if ("vibrate" in navigator) navigator.vibrate([40,30,40]); } catch {}
         if (document.visibilityState !== "visible") return;
         const text = message?.type === "audio" ? "🎙️ Голосовое сообщение" : (message?.text || "Новое сообщение");
         this.toast(`🌌 ${this.esc(message?.author || "Семья")}`, text);
@@ -143,6 +148,17 @@ const App = {
           </div>
           <div class="mode-row"><button class="mode-choice ${this.appearanceMode==="light"?"active":""}" onclick="App.setMode('light')">☀️ Светлая</button><button class="mode-choice ${this.appearanceMode==="dark"?"active":""}" onclick="App.setMode('dark')">🌙 Тёмная</button><button class="mode-choice ${this.appearanceMode==="system"?"active":""}" onclick="App.setMode('system')">⚙️ Системная</button></div>
         </div>
+        <div class="card typography-card"><div class="appearance-head"><div><b>🔤 Текст</b><small>Настрой шрифт и размер сообщений</small></div></div>
+          <label class="field-label">Шрифт</label>
+          <div class="font-grid">
+            <button class="font-choice ${this.fontFamily==="system"?"active":""}" onclick="App.setFont('system')">System</button>
+            <button class="font-choice ${this.fontFamily==="nunito"?"active":""}" onclick="App.setFont('nunito')">Nunito</button>
+            <button class="font-choice ${this.fontFamily==="inter"?"active":""}" onclick="App.setFont('inter')">Inter</button>
+            <button class="font-choice ${this.fontFamily==="rounded"?"active":""}" onclick="App.setFont('rounded')">Rounded</button>
+          </div>
+          <label class="field-label">Размер <b id="fontSizeValue">${this.fontSize}px</b></label>
+          <input class="font-range" type="range" min="14" max="23" step="1" value="${this.fontSize}" oninput="App.setFontSize(this.value)">
+        </div>
         </div></div>`;
         this.updatePushStatus();
     },
@@ -200,7 +216,12 @@ const App = {
     applyAppearance(){
         document.documentElement.dataset.theme=this.appearanceTheme;
         document.documentElement.dataset.mode=this.appearanceMode;
+        const fonts={system:"system-ui,-apple-system,Segoe UI,sans-serif",nunito:"Nunito,system-ui,sans-serif",inter:"Inter,system-ui,sans-serif",rounded:"Arial Rounded MT Bold,ui-rounded,system-ui,sans-serif"};
+        document.documentElement.style.setProperty("--family-font",fonts[this.fontFamily]||fonts.system);
+        document.documentElement.style.setProperty("--family-font-size",`${this.fontSize}px`);
     },
+    setFont(font){this.fontFamily=font;localStorage.setItem("FamilyFont",font);this.applyAppearance();this.openProfile();},
+    setFontSize(size){this.fontSize=Math.max(14,Math.min(23,Number(size)||17));localStorage.setItem("FamilyFontSize",String(this.fontSize));this.applyAppearance();const v=document.getElementById("fontSizeValue");if(v)v.textContent=`${this.fontSize}px`;},
     setTheme(theme){
         this.appearanceTheme=theme;localStorage.setItem("FamilyTheme",theme);this.applyAppearance();this.openProfile();
     },
@@ -221,27 +242,34 @@ const App = {
 
     async openUsers(){const users=await Auth.getUsers(),me=Auth.currentUser;app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👤 Личные</h1></div><div class="content dialog-list">${users.filter(u=>u.id!==me.id).map(u=>`<div class="dialog-card" onclick="App.openPrivateChat(${u.id})">${this.avatarHtml(u,48)}<div class="dialog-main"><div class="dialog-name">${this.esc(u.name)}</div><div class="dialog-preview">@${this.esc(u.login)} ${u.presence?.online?"· 🟢 онлайн":""}</div></div></div>`).join("")}</div></div>`;},
 
-    async openPrivateChat(otherId){
+    async refreshOpenChat(global,otherId){
+        if(global && !document.getElementById("messages"))return;
+        if(!global && !document.getElementById("privateMessages"))return;
+        try { if(global) await this.openGlobalChat(true); else await this.openPrivateChat(otherId,true); } catch(e){console.warn("Chat refresh:",e);}
+    },
+    async openPrivateChat(otherId,silent=false){
         const other=await Auth.getUserById(otherId);if(!other)return;document.body.dataset.privateUser=otherId;
-        let messages=await API.privateMessages(otherId);messages=await this.cacheFetchedAudio(messages,false,otherId);try{await API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId));}catch(e){}
-        app.innerHTML=`<div class="page"><div class="header"><button onclick="App.openUsers()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}</div>`;
+        try{this.usersCache=await API.users();}catch{}
+        let messages=await API.privateMessages(otherId);messages=await this.cacheFetchedAudio(messages,false,otherId);this._lastMessages=messages;try{await API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId));}catch(e){}
+        app.innerHTML=`<div class="page chat-page"><div class="header"><button onclick="App.openUsers()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}</div>`;
         this.scrollMessages("privateMessages");this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));this.hydrateLocalAudio("privateMessages");
     },
-    async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text);input.value="";this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
+    async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text,this.replyTarget);input.value="";this.clearReply();this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
 
-    async openGlobalChat(){
-        let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);try{await API.markRead("global","global");}catch(e){}document.body.dataset.privateUser="";
-        app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>🌌 Семья</h1></div><div class="messages" id="messages">${messages.map(m=>this.messageHtml(m,true)).join("")}</div>${this.chatFooter("global",null,"Напишите семье...")}</div>`;
+    async openGlobalChat(silent=false){
+        try{this.usersCache=await API.users();}catch{}
+        let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);this._lastMessages=messages;try{await API.markRead("global","global");}catch(e){}document.body.dataset.privateUser="";
+        app.innerHTML=`<div class="page chat-page"><div class="header"><button onclick="App.showHome()">←</button><h1>🌌 Семья</h1></div><div class="messages" id="messages">${messages.map(m=>this.messageHtml(m,true)).join("")}</div>${this.chatFooter("global",null,"Напишите семье...")}</div>`;
         this.scrollMessages("messages");this.bindChatInput("messageInput",()=>this.sendGlobal());this.hydrateLocalAudio("messages");
     },
-    async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendGlobal(text);input.value="";this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
+    async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendGlobal(text,this.replyTarget);input.value="";this.clearReply();this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
 
-    chatFooter(scope,id,placeholder){return `<div class="footer"><button class="tool-btn" id="micBtn" title="Голосовое сообщение" onclick="App.toggleRecording('${scope}',${id===null?"null":id})">🎙️</button><input id="${scope==="global"?"messageInput":"privateInput"}" placeholder="${placeholder}"><button class="primary send-btn" onclick="${scope==="global"?"App.sendGlobal()":"App.sendPrivate("+id+")"}">➤</button></div>`;},
-    bindChatInput(id,fn){const input=document.getElementById(id);if(input){input.focus();input.onkeydown=e=>{if(e.key==="Enter")fn();};}},
-    scrollMessages(id){const list=document.getElementById(id);if(list)list.scrollTop=list.scrollHeight;},
+    chatFooter(scope,id,placeholder){const inputId=scope==="global"?"messageInput":"privateInput";return `${this.replyTarget?`<div class="reply-bar"><b>↩️ Ответ</b><span>${this.esc(this.replyTarget.text||"Голосовое сообщение")}</span><button onclick="App.clearReply()">×</button></div>`:""}<div class="footer"><button class="tool-btn" title="Эмодзи" onclick="App.showEmojiPicker(this,'${inputId}')">😊</button><button class="tool-btn" id="micBtn" title="Голосовое сообщение" onclick="App.toggleRecording('${scope}',${id===null?"null":id})">🎙️</button><input id="${inputId}" placeholder="${placeholder}" autocomplete="off"><button class="primary send-btn" onclick="${scope==="global"?"App.sendGlobal()":"App.sendPrivate("+id+")"}">➤</button></div>`;},
+    bindChatInput(id,fn){const input=document.getElementById(id);if(input){input.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();fn();}};}},
+    scrollMessages(id){const list=document.getElementById(id);if(list)requestAnimationFrame(()=>{list.scrollTop=list.scrollHeight;setTimeout(()=>{list.scrollTop=list.scrollHeight;},80);});},
 
     linkify(text){
-        return this.esc(text).replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>');
+        return this.esc(text).replace(/(https?:\/\/[^\s<]+)/g,(m)=>{const clean=m.replace(/[.,!?;:]+$/g,"");const tail=m.slice(clean.length);return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${tail}`;});
     },
 
     hideKeyboard(){
@@ -251,11 +279,27 @@ const App = {
 
     messageHtml(m,global,otherId){
         const mine=Number(m.authorId)===Number(Auth.currentUser.id),scope=global?"global":"private",key=global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId),reactions=Object.entries(m.reactions||{}).filter(([,ids])=>ids.length);
+        const authorUser=this.usersCache.find(u=>Number(u.id)===Number(m.authorId))||m;
+        const avatar=!mine?this.avatarHtml(authorUser,34):"";
         const hasAudio=m.type==="audio"&&m.audio;
         const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
-        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div>${this.linkify(m.text||"")}</div>`;
-        return `<div class="message ${mine?"me":"other"}">${!mine?this.avatarHtml({avatar:m.avatar,gender:m.gender},34):""}<div class="bubble">${!mine?`<div class="author">${this.esc(m.author)}</div>`:""}${media}<div class="time">${new Date(m.time).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}</div><div class="reaction-line">${reactions.map(([e,ids])=>`<button onclick="App.react('${scope}','${key}',${m.id},'${e}')">${e} ${ids.length}</button>`).join("")}<button class="add-reaction" onclick="App.showReactions(this,'${scope}','${key}',${m.id})">＋</button></div></div></div>`;
+        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
+        const reply=m.replyTo?`<div class="reply-quote">↩️ ${this.esc(m.replyTo.author||"")}<br><span>${this.esc(m.replyTo.text||"Голосовое сообщение")}</span></div>`:"";
+        const favorite=this.isFavorite(scope,key,m.id);
+        const menu=`<button class="message-menu-btn" onclick="event.stopPropagation();App.messageMenu(event,'${scope}','${key}',${m.id},${mine})">⋯</button>`;
+        return `<div class="message ${mine?"me":"other"}" data-message-id="${m.id}" oncontextmenu="App.messageMenu(event,'${scope}','${key}',${m.id},${mine});return false">${avatar}<div class="bubble">${!mine?`<div class="author">${this.esc(m.author)}</div>`:""}${reply}${media}<div class="message-meta"><div class="time">${new Date(m.time).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}${m.edited?" · изменено":""}${favorite?" · ⭐":""}</div>${menu}</div><div class="reaction-line">${reactions.map(([e,ids])=>`<button onclick="App.react('${scope}','${key}',${m.id},'${e}')">${e} ${ids.length}</button>`).join("")}<button class="add-reaction" onclick="App.showReactions(this,'${scope}','${key}',${m.id})">＋</button></div></div></div>`;
     },
+    isFavorite(scope,key,id){return this.favorites.includes(`${scope}:${key}:${id}`);},
+    toggleFavorite(scope,key,id){const k=`${scope}:${key}:${id}`,i=this.favorites.indexOf(k);if(i>=0)this.favorites.splice(i,1);else this.favorites.push(k);localStorage.setItem("FamilyFavorites",JSON.stringify(this.favorites));this.refreshOpenChat(scope==="global",scope==="global"?null:Number(document.body.dataset.privateUser||0));},
+    messageMenu(event,scope,key,id,mine){event.preventDefault();document.querySelectorAll(".message-action-sheet").forEach(x=>x.remove());const m=this.findCurrentMessage(scope,key,id);if(!m)return;const sheet=document.createElement("div");sheet.className="message-action-sheet";sheet.innerHTML=`<button onclick="App.replyToMessage('${scope}','${key}',${id});this.closest('.message-action-sheet').remove()">↩️ Ответить</button>${mine&&m.type!=="audio"?`<button onclick="App.editMessage('${scope}','${key}',${id});this.closest('.message-action-sheet').remove()">✏️ Изменить</button>`:""}<button onclick="App.toggleFavorite('${scope}','${key}',${id});this.closest('.message-action-sheet').remove()">${this.isFavorite(scope,key,id)?"☆ Убрать из избранного":"⭐ В избранное"}</button>${mine||Auth.isAdmin()?`<button class="danger" onclick="App.deleteMessage('${scope}','${key}',${id});this.closest('.message-action-sheet').remove()">🗑️ Удалить</button>`:""}`;document.body.appendChild(sheet);sheet.style.left=Math.min(event.clientX||20,window.innerWidth-250)+"px";sheet.style.top=Math.min(event.clientY||100,window.innerHeight-240)+"px";setTimeout(()=>document.addEventListener("click",()=>sheet.remove(),{once:true}),0);return false;},
+    findCurrentMessage(scope,key,id){const root=scope==="global"?document.getElementById("messages"):document.getElementById("privateMessages");if(!root)return null;const el=root.querySelector(`[data-message-id="${id}"]`);if(!el)return null;return this._lastMessages?.find(m=>Number(m.id)===Number(id))||null;},
+    replyToMessage(scope,key,id){const m=this.findCurrentMessage(scope,key,id);if(!m)return;this.replyTarget={id:m.id,author:m.author,text:m.text,type:m.type};this.refreshOpenChat(scope==="global",Number(document.body.dataset.privateUser||0));},
+    clearReply(){this.replyTarget=null;this.refreshOpenChat(this.getCurrentScope()==="global",Number(document.body.dataset.privateUser||0));},
+    async editMessage(scope,key,id){const m=this.findCurrentMessage(scope,key,id);if(!m||m.type==="audio")return;const text=prompt("Изменить сообщение:",m.text||"");if(text===null)return;try{await API.editMessage(scope,key,id,text.trim());}catch(e){alert(e.message);}},
+    async deleteMessage(scope,key,id){if(!confirm("Удалить это сообщение?"))return;try{await API.deleteMessage(scope,key,id);}catch(e){alert(e.message);}},
+    showEmojiPicker(btn,inputId){document.querySelectorAll(".emoji-picker").forEach(x=>x.remove());const box=document.createElement("div");box.className="emoji-picker";box.innerHTML=["😀","😂","😍","🥰","😘","😢","😮","😡","👍","👎","❤️","💕","🔥","🎉","🙏","😊","😉","🤗","🤣","🥹","😎","💋","🌹","☀️","🌌"].map(e=>`<button onclick="App.insertEmoji('${inputId}','${e}')">${e}</button>`).join("");btn.parentElement.parentElement.appendChild(box);},
+    insertEmoji(inputId,emoji){const input=document.getElementById(inputId);if(!input)return;const start=input.selectionStart||input.value.length,end=input.selectionEnd||input.value.length;input.value=input.value.slice(0,start)+emoji+input.value.slice(end);input.focus();input.selectionStart=input.selectionEnd=start+emoji.length;document.querySelectorAll(".emoji-picker").forEach(x=>x.remove());},
+    getCurrentScope(){return document.getElementById("messages")?"global":"private"},
     formatDuration(s){s=Math.round(Number(s)||0);return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;},
     showReactions(btn,scope,key,id){document.querySelectorAll(".reaction-picker").forEach(x=>x.remove());const box=document.createElement("div");box.className="reaction-picker";box.innerHTML=REACTIONS.map(e=>`<button onclick="App.react('${scope}','${key}',${id},'${e}');this.parentElement.remove()">${e}</button>`).join("");btn.parentElement.appendChild(box);},
     async react(scope,key,id,emoji){try{await API.react(scope,key,id,emoji);}catch(e){alert(e.message);}},
@@ -284,8 +328,9 @@ const App = {
                 const data=await this.blobToDataURL(blob);
                 const audio={mime:blob.type,data,duration};
                 try{
-                    const sent=scope==="global"?await API.sendGlobalAudio(audio):await API.sendPrivateAudio(id,audio);
+                    const sent=scope==="global"?await API.sendGlobalAudio(audio,this.replyTarget):await API.sendPrivateAudio(id,audio,this.replyTarget);
                     if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type,duration);
+                    this.replyTarget=null;
                     this.cosmicSound("send");
                     if(scope==="global")this.openGlobalChat();else this.openPrivateChat(id);
                 }catch(e){alert(e.message);}

@@ -33,17 +33,19 @@ const API = {
     async updateUser(id,data) { return (await this.request(`/api/users/${id}`,{method:"PUT",body:JSON.stringify(data)})).user; },
     async deleteUser(id) { return this.request(`/api/users/${id}`,{method:"DELETE"}); },
     async globalMessages() { return (await this.request("/api/messages/global")).messages; },
-    async sendGlobal(text) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({text})})).message; },
-    async sendGlobalAudio(audio) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({audio})})).message; },
+    async sendGlobal(text,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
+    async sendGlobalAudio(audio,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({audio,replyTo})})).message; },
     async privateMessages(id) { return (await this.request(`/api/messages/private/${id}`)).messages; },
-    async sendPrivate(id,text) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({text})})).message; },
-    async sendPrivateAudio(id,audio) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({audio})})).message; },
+    async sendPrivate(id,text,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
+    async sendPrivateAudio(id,audio,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({audio,replyTo})})).message; },
     async audioAck(scope,key,messageId,audioId) {
         return this.request(`/api/audio/ack`,{method:"POST",body:JSON.stringify({scope,key,messageId,audioId})});
     },
     async react(scope,key,messageId,emoji) {
         return (await this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}/reaction`,{method:"POST",body:JSON.stringify({emoji})})).reactions;
     },
+    async editMessage(scope,key,messageId,text) { return (await this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}`,{method:"PUT",body:JSON.stringify({text})})).message; },
+    async deleteMessage(scope,key,messageId) { return this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}`,{method:"DELETE"}); },
     async pushPublicKey() { return (await this.request("/api/push/public-key")).publicKey; },
     async pushSubscribe(subscription) { return this.request("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
     async pushUnsubscribe(endpoint) { return this.request("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
