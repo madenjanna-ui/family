@@ -292,3 +292,37 @@ translateY(0);
 .messages,.bubble,input,button{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
 .bubble{line-height:1.45;font-size:16px;}
 .bubble a{color:var(--accent);text-decoration:underline;word-break:break-word;}
+
+
+/* ==========================================
+   Family v6 — Messenger UI
+   ========================================== */
+:root{--family-font:system-ui,-apple-system,"Segoe UI",sans-serif;--family-font-size:17px}
+html,body,button,input{font-family:var(--family-font)}
+body{font-size:var(--family-font-size);overflow-x:hidden;overscroll-behavior:none}
+.page{box-sizing:border-box}
+.chat-page{height:100dvh;min-height:100dvh;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0}
+.chat-page .header{flex:0 0 auto}
+.chat-page .messages{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:18px 4px 118px;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+.chat-page .footer{z-index:20}
+.message{align-items:flex-end;gap:7px;position:relative}
+.message.other .avatar{width:34px!important;height:34px!important;font-size:20px!important}
+.message .bubble{position:relative;max-width:min(82%,620px);font-size:var(--family-font-size);line-height:1.45}
+.message-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.message-text a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.message-meta{display:flex;align-items:center;justify-content:flex-end;gap:4px;min-height:16px}
+.message-meta .time{flex:1}
+.message-menu-btn{border:0;background:transparent;color:var(--muted);font-size:20px;line-height:1;padding:0 2px;cursor:pointer;opacity:.5}
+.message-menu-btn:hover{opacity:1}
+.reply-quote{margin:0 0 8px;padding:7px 10px;border-left:3px solid var(--accent);background:rgba(127,103,220,.09);border-radius:9px;font-size:.82em;color:var(--muted)}
+.reply-quote span{opacity:.8}
+.reply-bar{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);width:min(760px,100%);z-index:19;display:flex;align-items:center;gap:9px;padding:8px 14px;background:var(--surface-strong);backdrop-filter:blur(16px);border-top:1px solid var(--line);border-bottom:1px solid var(--line);box-sizing:border-box}
+.reply-bar span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:13px}.reply-bar button{border:0;background:transparent;color:var(--text);font-size:22px}
+.message-action-sheet{position:fixed;z-index:2000;width:235px;max-width:calc(100vw - 20px);display:flex;flex-direction:column;padding:7px;background:var(--surface-strong);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 50px rgba(0,0,0,.25);backdrop-filter:blur(20px)}
+.message-action-sheet button{border:0;background:transparent;color:var(--text);text-align:left;padding:12px 13px;border-radius:12px;font-size:15px;cursor:pointer}.message-action-sheet button:hover{background:rgba(127,103,220,.12)}.message-action-sheet .danger{color:#d84d65}
+.emoji-picker{position:absolute;z-index:100;left:8px;bottom:66px;width:min(340px,calc(100vw - 20px));display:grid;grid-template-columns:repeat(8,1fr);gap:4px;padding:10px;background:var(--surface-strong);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 45px rgba(0,0,0,.22);backdrop-filter:blur(18px)}
+.emoji-picker button{border:0;background:transparent;border-radius:10px;font-size:23px;padding:7px 2px;cursor:pointer}.emoji-picker button:hover{background:rgba(127,103,220,.12)}
+.font-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:8px 0 16px}.font-choice{border:1px solid var(--line);background:rgba(255,255,255,.22);color:var(--text);border-radius:14px;padding:11px;font-weight:700;cursor:pointer}.font-choice.active{background:var(--accent);color:#fff;border-color:transparent}.font-range{width:100%;accent-color:var(--accent);margin:8px 0 4px}
+.typography-card{cursor:default}.appearance-current{color:var(--text)}
+@media(max-width:600px){.chat-page{padding:0}.chat-page .header{padding:10px 8px}.chat-page .messages{padding-left:8px;padding-right:8px}.message .bubble{max-width:84%}.reply-bar{bottom:64px}.emoji-picker{grid-template-columns:repeat(6,1fr);bottom:60px}.message-action-sheet{left:10px!important;right:10px!important;bottom:10px!important;top:auto!important;width:auto;max-width:none;border-radius:22px;padding:8px}.message-action-sheet button{padding:14px;font-size:16px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
