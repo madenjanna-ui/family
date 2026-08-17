@@ -11,6 +11,7 @@ const App = {
     notificationRegistration:null,
     appearanceTheme: localStorage.getItem("FamilyTheme") || "cosmic",
     appearanceMode: localStorage.getItem("FamilyMode") || "light",
+    chatNavSeq: 0,
     fontFamily: localStorage.getItem("FamilyFont") || "system",
     fontSize: Number(localStorage.getItem("FamilyFontSize") || 17),
     usersCache: [],
@@ -110,6 +111,7 @@ const App = {
     },
 
     async showHome() {
+        ++this.chatNavSeq;
         const u=Auth.currentUser;if(!u){this.showLogin();return;}
         let unread={global:0,private:{}};try{unread=await API.unread();}catch(e){console.warn("Unread:",e);}
         const globalCount=Number(unread.global||0), privateCounts=unread.private||{};
@@ -133,6 +135,7 @@ const App = {
     },
 
     async openProfile() {
+        ++this.chatNavSeq;
         const u=Auth.currentUser;
         const themeNames={cosmic:"🌌 Космос",warm:"🌅 Тёплая",fresh:"🌿 Свежая"};
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>🪐 Профиль</h1></div><div class="content">
@@ -253,6 +256,7 @@ const App = {
         this.appearanceMode=mode;localStorage.setItem("FamilyMode",mode);this.applyAppearance();this.openProfile();
     },
     async openAdmin() {
+        ++this.chatNavSeq;
         if(!Auth.isAdmin())return;const users=await Auth.getUsers();
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👑 Пользователи</h1></div><div class="content">
         ${users.map(u=>`<div class="card user-row"><div class="user-person">${this.avatarHtml(u,48)}<div><div class="user-name">${this.esc(u.name)}</div><small>@${this.esc(u.login)} · ${u.role==="admin"?"Администратор":"Пользователь"}</small></div></div><div class="actions"><button onclick="App.editUser(${u.id})">✏️</button>${u.id!==Auth.currentUser.id?`<button onclick="App.removeUser(${u.id})">🗑️</button>`:""}</div></div>`).join("")}
@@ -264,7 +268,7 @@ const App = {
     async saveUser(id){const data={name:document.getElementById("editName").value.trim(),login:document.getElementById("editLogin").value.trim(),gender:document.querySelector('input[name="eg"]:checked').value};const p=document.getElementById("editPassword").value.trim();if(p)data.password=p;const r=await Auth.updateUser(id,data);if(!r.success){alert(r.error);return;}await this.openAdmin();},
     async removeUser(id){const u=await Auth.getUserById(id);if(!u)return;if(!confirm(`Удалить "${u.name}"?`))return;const r=await Auth.deleteUser(id);if(!r.success)alert(r.error);else await this.openAdmin();},
 
-    async openUsers(){const users=await Auth.getUsers(),me=Auth.currentUser;app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👤 Личные</h1></div><div class="content dialog-list">${users.filter(u=>u.id!==me.id).map(u=>`<div class="dialog-card" onclick="App.openPrivateChat(${u.id})">${this.avatarHtml(u,48)}<div class="dialog-main"><div class="dialog-name">${this.esc(u.name)}</div><div class="dialog-preview">@${this.esc(u.login)} ${u.presence?.online?"· 🟢 онлайн":""}</div></div></div>`).join("")}</div></div>`;},
+    async openUsers(){++this.chatNavSeq;const users=await Auth.getUsers(),me=Auth.currentUser;app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👤 Личные</h1></div><div class="content dialog-list">${users.filter(u=>u.id!==me.id).map(u=>`<div class="dialog-card" onclick="App.openPrivateChat(${u.id})">${this.avatarHtml(u,48)}<div class="dialog-main"><div class="dialog-name">${this.esc(u.name)}</div><div class="dialog-preview">@${this.esc(u.login)} ${u.presence?.online?"· 🟢 онлайн":""}</div></div></div>`).join("")}</div></div>`;},
 
     async refreshOpenChat(global,otherId){
         if(global && !document.getElementById("messages"))return;
@@ -272,17 +276,24 @@ const App = {
         try { if(global) await this.openGlobalChat(true); else await this.openPrivateChat(otherId,true); } catch(e){console.warn("Chat refresh:",e);}
     },
     async openPrivateChat(otherId,silent=false){
-        const other=await Auth.getUserById(otherId);if(!other)return;document.body.dataset.privateUser=otherId;
+        const navSeq=++this.chatNavSeq;
+        const other=await Auth.getUserById(otherId);if(!other)return;
+        if(navSeq!==this.chatNavSeq)return;
+        document.body.dataset.privateUser=otherId;
         try{this.usersCache=await API.users();}catch{}
         let messages=await API.privateMessages(otherId);messages=await this.cacheFetchedAudio(messages,false,otherId);this._lastMessages=messages;try{await API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId));}catch(e){}
+        if(navSeq!==this.chatNavSeq || Number(document.body.dataset.privateUser)!==Number(otherId))return;
         app.innerHTML=`<div class="page chat-page"><div class="header"><button onclick="App.openUsers()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}</div>`;
         this.scrollMessages("privateMessages");this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));this.hydrateLocalAudio("privateMessages");
     },
     async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text,this.replyTarget);input.value="";this.clearReply();this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
 
     async openGlobalChat(silent=false){
+        const navSeq=++this.chatNavSeq;
         try{this.usersCache=await API.users();}catch{}
-        let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);this._lastMessages=messages;try{await API.markRead("global","global");}catch(e){}document.body.dataset.privateUser="";
+        let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);this._lastMessages=messages;try{await API.markRead("global","global");}catch(e){}
+        if(navSeq!==this.chatNavSeq)return;
+        document.body.dataset.privateUser="";
         app.innerHTML=`<div class="page chat-page"><div class="header"><button onclick="App.showHome()">←</button><h1>🌌 Семья</h1></div><div class="messages" id="messages">${messages.map(m=>this.messageHtml(m,true)).join("")}</div>${this.chatFooter("global",null,"Напишите семье...")}</div>`;
         this.scrollMessages("messages");this.bindChatInput("messageInput",()=>this.sendGlobal());this.hydrateLocalAudio("messages");
     },
@@ -401,8 +412,17 @@ const App = {
 };
 
 setInterval(async()=>{
-    if(!Auth.currentUser)return;if(document.getElementById("messages")||document.getElementById("privateMessages"))return;
-    try{const unread=await API.unread(),total=Number(unread.global||0)+Object.values(unread.private||{}).reduce((a,b)=>a+Number(b||0),0),current=document.getElementById("familyUnreadTotal");if(current)current.textContent=String(total);else if(total>0&&document.querySelector(".content"))App.showHome();}catch{}
+    if(!Auth.currentUser)return;
+    // Never navigate the user automatically. The old polling code could call showHome()
+    // while a chat was still opening, which caused an intermittent jump back to the main menu.
+    if(document.getElementById("messages")||document.getElementById("privateMessages"))return;
+    if(!document.querySelector(".page .content"))return;
+    try{
+        const unread=await API.unread();
+        const total=Number(unread.global||0)+Object.values(unread.private||{}).reduce((a,b)=>a+Number(b||0),0);
+        const current=document.getElementById("familyUnreadTotal");
+        if(current) current.textContent=String(total);
+    }catch{}
 },3000);
 
 App.start();
