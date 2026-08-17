@@ -710,7 +710,7 @@ const server =
                             ok: true,
                             service:
                                 "Family Server",
-                            version: 5,
+                            version: 6.2,
                             users:
                                 db.users.length
                         }
