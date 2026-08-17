@@ -38,6 +38,9 @@ const API = {
     async privateMessages(id) { return (await this.request(`/api/messages/private/${id}`)).messages; },
     async sendPrivate(id,text) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({text})})).message; },
     async sendPrivateAudio(id,audio) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({audio})})).message; },
+    async audioAck(scope,key,messageId,audioId) {
+        return this.request(`/api/audio/ack`,{method:"POST",body:JSON.stringify({scope,key,messageId,audioId})});
+    },
     async react(scope,key,messageId,emoji) {
         return (await this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}/reaction`,{method:"POST",body:JSON.stringify({emoji})})).reactions;
     },

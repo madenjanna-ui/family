@@ -9,8 +9,11 @@ const App = {
     recordingStarted:0,
     recordingTimer:null,
     notificationRegistration:null,
+    appearanceTheme: localStorage.getItem("FamilyTheme") || "cosmic",
+    appearanceMode: localStorage.getItem("FamilyMode") || "light",
 
     async start() {
+        this.applyAppearance();
         this.initPWA();
         if (await Auth.autoLogin()) {
             this.connectRealtime();
@@ -47,8 +50,16 @@ const App = {
         });
     },
 
-    messageArrived(message, global) {
+    async messageArrived(message, global) {
         this.cosmicSound("message");
+        if(message?.type==="audio"&&message.audio?.data&&message.audio?.id){
+            try{
+                const blob=await (await fetch(message.audio.data)).blob();
+                await MediaVault.put(message.audio.id,blob,message.audio.mime,message.audio.duration);
+                const key=global?"global":this.getPrivateChatId(Auth.currentUser.id,message.authorId);
+                await API.audioAck(global?"global":"private",key,message.id,message.audio.id);
+            }catch(e){console.warn("Audio delivery:",e);}
+        }
         if (document.visibilityState !== "visible") return;
         const text = message?.type === "audio" ? "🎙️ Голосовое сообщение" : (message?.text || "Новое сообщение");
         this.toast(`🌌 ${this.esc(message?.author || "Семья")}`, text);
@@ -79,7 +90,7 @@ const App = {
     },
 
     showLogin() {
-        app.innerHTML = `<div class="login"><div class="logo">😍</div><div class="title">Family</div><div class="subtitle">Семья · космический семейный чат</div>
+        app.innerHTML = `<div class="login cosmic-login"><img class="login-icon" src="assets/icon-512.png" alt="Family"><div class="logo">😍</div><div class="title">Family</div><div class="subtitle">Семья · космический семейный чат</div>
         <input id="login" placeholder="Логин" autocomplete="username">
         <input id="password" type="password" placeholder="Пароль" autocomplete="current-password">
         <button class="primary" onclick="App.login()">Войти</button></div>`;
@@ -99,7 +110,7 @@ const App = {
         const globalCount=Number(unread.global||0), privateCounts=unread.private||{};
         const totalPrivate=Object.values(privateCounts).reduce((a,b)=>a+Number(b||0),0), total=globalCount+totalPrivate;
         app.innerHTML=`<div class="page"><div class="header">
-        <h1>😍 Family</h1><div class="header-right">${total>0?`<span id="familyUnreadTotal" class="badge">${total}</span>`:""}<button class="icon-btn" onclick="App.openProfile()">${this.avatarHtml(u,34)}</button></div></div>
+        <h1 class="brand-title"><img class="brand-icon" src="assets/icon-180.png" alt=""> Family</h1><div class="header-right">${total>0?`<span id="familyUnreadTotal" class="badge">${total}</span>`:""}<button class="icon-btn" onclick="App.openProfile()">${this.avatarHtml(u,34)}</button></div></div>
         <div class="content">
         <div class="card cosmic-card" onclick="App.openGlobalChat()"><div class="home-card-title">🌌 <b>Семья</b>${globalCount>0?`<span class="badge badge-pulse">${globalCount}</span>`:""}</div><small>Общий семейный чат${globalCount>0?` · ${globalCount} новых`:""}</small></div>
         <div class="card" onclick="App.openUsers()"><div class="home-card-title">👤 <b>Личные сообщения</b>${totalPrivate>0?`<span class="badge badge-pulse">${totalPrivate}</span>`:""}</div><small>Диалоги с семьёй${totalPrivate>0?` · ${totalPrivate} новых`:""}</small></div>
@@ -118,11 +129,20 @@ const App = {
 
     async openProfile() {
         const u=Auth.currentUser;
+        const themeNames={cosmic:"🌌 Космос",warm:"🌅 Тёплая",fresh:"🌿 Свежая"};
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>🪐 Профиль</h1></div><div class="content">
         <div class="profile-card"><div id="profileAvatar">${this.avatarHtml(u,92)}</div><div><h2>${this.esc(u.name)}</h2><small>@${this.esc(u.login)}</small></div></div>
         <div class="card form"><label class="field-label">Имя</label><input id="profileName" value="${this.attr(u.name)}"><label class="field-label">Аватар</label><input id="avatarFile" type="file" accept="image/*" onchange="App.previewAvatar(event)"><div class="avatar-actions"><button class="secondary" onclick="App.removeAvatar()">Удалить аватар</button><button class="primary" onclick="App.saveProfile()">Сохранить</button></div></div>
         <div class="card settings-card"><div><b>🔔 Уведомления</b><small id="pushStatus">Проверка…</small></div><button class="primary" onclick="App.enableNotifications()">Включить</button></div>
         <div class="card settings-card"><div><b>🌌 Космические звуки</b><small>Звук при новых сообщениях и действиях</small></div><button class="secondary" onclick="App.toggleSound()">${localStorage.getItem("FamilySound")==="off"?"Включить":"Выключить"}</button></div>
+        <div class="card appearance-card"><div class="appearance-head"><div><b>🎨 Оформление</b><small>Выбери атмосферу Family</small></div><span class="appearance-current">${themeNames[this.appearanceTheme]}</span></div>
+          <div class="theme-grid">
+            <button class="theme-choice cosmic ${this.appearanceTheme==="cosmic"?"active":""}" onclick="App.setTheme('cosmic')"><span>🌌</span><b>Космос</b><small>Звёзды</small></button>
+            <button class="theme-choice warm ${this.appearanceTheme==="warm"?"active":""}" onclick="App.setTheme('warm')"><span>🌅</span><b>Тёплая</b><small>Уют</small></button>
+            <button class="theme-choice fresh ${this.appearanceTheme==="fresh"?"active":""}" onclick="App.setTheme('fresh')"><span>🌿</span><b>Свежая</b><small>Лёгкость</small></button>
+          </div>
+          <div class="mode-row"><button class="mode-choice ${this.appearanceMode==="light"?"active":""}" onclick="App.setMode('light')">☀️ Светлая</button><button class="mode-choice ${this.appearanceMode==="dark"?"active":""}" onclick="App.setMode('dark')">🌙 Тёмная</button><button class="mode-choice ${this.appearanceMode==="system"?"active":""}" onclick="App.setMode('system')">⚙️ Системная</button></div>
+        </div>
         </div></div>`;
         this.updatePushStatus();
     },
@@ -177,6 +197,16 @@ const App = {
     urlBase64ToUint8Array(base64){const pad="=".repeat((4-base64.length%4)%4),b64=(base64+pad).replace(/-/g,"+").replace(/_/g,"/");const raw=atob(b64);return Uint8Array.from([...raw].map(c=>c.charCodeAt(0)));},
     toggleSound(){const off=localStorage.getItem("FamilySound")==="off";localStorage.setItem("FamilySound",off?"on":"off");this.openProfile();},
 
+    applyAppearance(){
+        document.documentElement.dataset.theme=this.appearanceTheme;
+        document.documentElement.dataset.mode=this.appearanceMode;
+    },
+    setTheme(theme){
+        this.appearanceTheme=theme;localStorage.setItem("FamilyTheme",theme);this.applyAppearance();this.openProfile();
+    },
+    setMode(mode){
+        this.appearanceMode=mode;localStorage.setItem("FamilyMode",mode);this.applyAppearance();this.openProfile();
+    },
     async openAdmin() {
         if(!Auth.isAdmin())return;const users=await Auth.getUsers();
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👑 Пользователи</h1></div><div class="content">
@@ -193,16 +223,16 @@ const App = {
 
     async openPrivateChat(otherId){
         const other=await Auth.getUserById(otherId);if(!other)return;document.body.dataset.privateUser=otherId;
-        const messages=await API.privateMessages(otherId);try{await API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId));}catch(e){}
+        let messages=await API.privateMessages(otherId);messages=await this.cacheFetchedAudio(messages,false,otherId);try{await API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId));}catch(e){}
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.openUsers()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}</div>`;
-        this.scrollMessages("privateMessages");this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));
+        this.scrollMessages("privateMessages");this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));this.hydrateLocalAudio("privateMessages");
     },
     async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text);input.value="";this.cosmicSound("send");}catch(e){alert(e.message);}},
 
     async openGlobalChat(){
-        const messages=await API.globalMessages();try{await API.markRead("global","global");}catch(e){}document.body.dataset.privateUser="";
+        let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);try{await API.markRead("global","global");}catch(e){}document.body.dataset.privateUser="";
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>🌌 Семья</h1></div><div class="messages" id="messages">${messages.map(m=>this.messageHtml(m,true)).join("")}</div>${this.chatFooter("global",null,"Напишите семье...")}</div>`;
-        this.scrollMessages("messages");this.bindChatInput("messageInput",()=>this.sendGlobal());
+        this.scrollMessages("messages");this.bindChatInput("messageInput",()=>this.sendGlobal());this.hydrateLocalAudio("messages");
     },
     async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendGlobal(text);input.value="";this.cosmicSound("send");}catch(e){alert(e.message);}},
 
@@ -212,7 +242,9 @@ const App = {
 
     messageHtml(m,global,otherId){
         const mine=Number(m.authorId)===Number(Auth.currentUser.id),scope=global?"global":"private",key=global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId),reactions=Object.entries(m.reactions||{}).filter(([,ids])=>ids.length);
-        const media=m.type==="audio"&&m.audio?.data?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое</div><audio controls preload="metadata" src="${this.attr(m.audio.data)}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div>${this.esc(m.text||"")}</div>`;
+        const hasAudio=m.type==="audio"&&m.audio;
+        const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
+        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div>${this.esc(m.text||"")}</div>`;
         return `<div class="message ${mine?"me":"other"}">${!mine?this.avatarHtml({avatar:m.avatar,gender:m.gender},34):""}<div class="bubble">${!mine?`<div class="author">${this.esc(m.author)}</div>`:""}${media}<div class="time">${new Date(m.time).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"})}</div><div class="reaction-line">${reactions.map(([e,ids])=>`<button onclick="App.react('${scope}','${key}',${m.id},'${e}')">${e} ${ids.length}</button>`).join("")}<button class="add-reaction" onclick="App.showReactions(this,'${scope}','${key}',${m.id})">＋</button></div></div></div>`;
     },
     formatDuration(s){s=Math.round(Number(s)||0);return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;},
@@ -223,22 +255,60 @@ const App = {
         if(this.mediaRecorder && this.mediaRecorder.state==="recording"){this.mediaRecorder.stop();return;}
         if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){alert("Голосовые сообщения не поддерживаются этим браузером");return;}
         try{
-            this.mediaStream=await navigator.mediaDevices.getUserMedia({audio:true});
-            const mime=["audio/mp4","audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus"].find(x=>MediaRecorder.isTypeSupported?.(x));
-            this.mediaRecorder=mime?new MediaRecorder(this.mediaStream,{mimeType:mime}):new MediaRecorder(this.mediaStream);
+            this.mediaStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+            const candidates=["audio/mp4;codecs=mp4a.40.2","audio/mp4","audio/webm;codecs=opus","audio/webm"];
+            const mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x));
+            this.mediaRecorder=mime?new MediaRecorder(this.mediaStream,{mimeType:mime,audioBitsPerSecond:64000}):new MediaRecorder(this.mediaStream);
             this.recordingChunks=[];this.recordingStarted=Date.now();
-            this.mediaRecorder.ondataavailable=e=>{if(e.data.size)this.recordingChunks.push(e.data);};
-            this.mediaRecorder.onstop=async()=>{clearInterval(this.recordingTimer);this.setRecordingUI(false);this.mediaStream?.getTracks().forEach(t=>t.stop());
-                const blob=new Blob(this.recordingChunks,{type:this.mediaRecorder.mimeType||mime||"audio/webm"});const duration=(Date.now()-this.recordingStarted)/1000;
-                if(duration<0.5)return;const data=await this.blobToDataURL(blob);const audio={mime:blob.type,data,duration};
-                try{if(scope==="global")await API.sendGlobalAudio(audio);else await API.sendPrivateAudio(id,audio);this.cosmicSound("send");}catch(e){alert(e.message);}
+            let failed=false;
+            this.mediaRecorder.onerror=()=>{failed=true;this.stopRecordingResources();alert("Во время записи произошла ошибка. Попробуйте ещё раз.");};
+            this.mediaRecorder.ondataavailable=e=>{if(e.data&&e.data.size)this.recordingChunks.push(e.data);};
+            this.mediaRecorder.onstop=async()=>{
+                clearInterval(this.recordingTimer);this.setRecordingUI(false);
+                const recorder=this.mediaRecorder;const stream=this.mediaStream;this.mediaRecorder=null;this.mediaStream=null;
+                stream?.getTracks().forEach(t=>t.stop());
+                if(failed)return;
+                const duration=(Date.now()-this.recordingStarted)/1000;if(duration<0.5)return;
+                const type=recorder?.mimeType||mime||"audio/mp4";
+                const blob=new Blob(this.recordingChunks,{type});
+                if(!blob.size){alert("Запись получилась пустой. Попробуйте ещё раз.");return;}
+                const data=await this.blobToDataURL(blob);
+                const audio={mime:blob.type,data,duration};
+                try{
+                    const sent=scope==="global"?await API.sendGlobalAudio(audio):await API.sendPrivateAudio(id,audio);
+                    if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type,duration);
+                    this.cosmicSound("send");
+                    if(scope==="global")this.openGlobalChat();else this.openPrivateChat(id);
+                }catch(e){alert(e.message);}
             };
-            this.mediaRecorder.start();this.setRecordingUI(true);this.cosmicSound("record");
-        }catch(e){alert("Не удалось получить доступ к микрофону: "+e.message);}
+            // A short timeslice makes Safari/iPhone deliver chunks reliably instead of waiting for stop().
+            this.mediaRecorder.start(250);this.setRecordingUI(true);this.cosmicSound("record");
+        }catch(e){this.stopRecordingResources();alert("Не удалось получить доступ к микрофону: "+(e?.message||"проверьте разрешение микрофона"));}
     },
-    setRecordingUI(active){const btn=document.getElementById("micBtn");if(!btn)return;if(active){btn.classList.add("recording");btn.textContent="⏹️";this.recordingTimer=setInterval(()=>{const s=(Date.now()-this.recordingStarted)/1000;btn.title=`Запись ${this.formatDuration(s)}`;},250);}else{btn.classList.remove("recording");btn.textContent="🎙️";btn.title="Голосовое сообщение";}},
+    stopRecordingResources(){clearInterval(this.recordingTimer);this.recordingTimer=null;this.mediaStream?.getTracks().forEach(t=>t.stop());this.mediaStream=null;this.mediaRecorder=null;this.setRecordingUI(false);},
+    async hydrateLocalAudio(containerId){
+        const root=document.getElementById(containerId);if(!root)return;
+        const audios=[...root.querySelectorAll("audio.family-audio[data-audio-id]")];
+        for(const el of audios){
+            if(el.src)continue;
+            try{const item=await MediaVault.get(el.dataset.audioId);if(item?.blob)el.src=URL.createObjectURL(item.blob);}catch(e){console.warn("Local audio:",e);}
+        }
+    },
+    setRecordingUI(active){const btn=document.getElementById("micBtn");if(!btn)return;if(active){btn.classList.add("recording");btn.innerHTML='<span class="record-dot">●</span><span class="record-time">0:00</span>';this.recordingTimer=setInterval(()=>{const s=(Date.now()-this.recordingStarted)/1000;const t=btn.querySelector(".record-time");if(t)t.textContent=this.formatDuration(s);btn.title=`Запись ${this.formatDuration(s)}`;},250);}else{btn.classList.remove("recording");btn.textContent="🎙️";btn.title="Голосовое сообщение";}},
     blobToDataURL(blob){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob);});},
 
+    async cacheFetchedAudio(messages,global,otherId){
+        for(const m of messages||[]){
+            if(m.type!=="audio"||!m.audio?.data||!m.audio?.id)continue;
+            try{
+                const blob=await (await fetch(m.audio.data)).blob();
+                await MediaVault.put(m.audio.id,blob,m.audio.mime,m.audio.duration);
+                const key=global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId);
+                if(Number(m.authorId)!==Number(Auth.currentUser.id)) await API.audioAck(global?"global":"private",key,m.id,m.audio.id);
+            }catch(e){console.warn("Audio cache:",e);}
+        }
+        return messages;
+    },
     getPrivateChatId(a,b){return [Number(a),Number(b)].sort((x,y)=>x-y).join("_");},
     esc(v){return String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");},
     attr(v){return this.esc(v);}
