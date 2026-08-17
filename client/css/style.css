@@ -324,5 +324,18 @@ body{font-size:var(--family-font-size);overflow-x:hidden;overscroll-behavior:non
 .emoji-picker button{border:0;background:transparent;border-radius:10px;font-size:23px;padding:7px 2px;cursor:pointer}.emoji-picker button:hover{background:rgba(127,103,220,.12)}
 .font-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:8px 0 16px}.font-choice{border:1px solid var(--line);background:rgba(255,255,255,.22);color:var(--text);border-radius:14px;padding:11px;font-weight:700;cursor:pointer}.font-choice.active{background:var(--accent);color:#fff;border-color:transparent}.font-range{width:100%;accent-color:var(--accent);margin:8px 0 4px}
 .typography-card{cursor:default}.appearance-current{color:var(--text)}
-@media(max-width:600px){.chat-page{padding:0}.chat-page .header{padding:10px 8px}.chat-page .messages{padding-top:70px;padding-left:8px;padding-right:8px}.message .bubble{max-width:84%}.reply-bar{bottom:64px}.emoji-picker{grid-template-columns:repeat(6,1fr);bottom:60px}.message-action-sheet{left:10px!important;right:10px!important;bottom:10px!important;top:auto!important;width:auto;max-width:none;border-radius:22px;padding:8px}.message-action-sheet button{padding:14px;font-size:16px}}
+@media(max-width:600px){.chat-page{padding:0}.chat-page .header{padding:10px 8px}.chat-page .messages{padding-left:8px;padding-right:8px}.message .bubble{max-width:84%}.reply-bar{bottom:64px}.emoji-picker{grid-template-columns:repeat(6,1fr);bottom:60px}.message-action-sheet{left:10px!important;right:10px!important;bottom:10px!important;top:auto!important;width:auto;max-width:none;border-radius:22px;padding:8px}.message-action-sheet button{padding:14px;font-size:16px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+
+
+/* Family v6.2 fixes */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&display=swap");
+html,body,button,input,.messages,.message,.bubble,.message-text,.author,.time,.footer{font-family:var(--family-font)!important;}
+.message .bubble{font-size:var(--family-font-size)!important;}
+.chat-page .header{position:relative!important;top:auto!important;flex:0 0 auto;z-index:30;}
+.chat-page .messages{position:relative;z-index:1;}
+.chat-page .footer{position:relative;left:auto;bottom:auto;transform:none;width:100%;flex:0 0 auto;z-index:40;}
+.chat-page{height:100dvh!important;min-height:100dvh!important;overflow:hidden!important;}
+.voice-message{max-width:100%;}
+.voice-message audio{max-width:100%;}
+.tool-btn.recording{min-width:46px;}
