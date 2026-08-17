@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const WebSocket = require("ws");
+const webpush = require("web-push");
 
 const HOST = "0.0.0.0";
 const PORT = Number(process.env.PORT || 8000);
@@ -112,6 +113,89 @@ function saveDatabase(db) {
 }
 
 const db = loadDatabase();
+
+function ensurePushConfig() {
+    if (db.pushConfig?.publicKey && db.pushConfig?.privateKey) return;
+    try {
+        const keys = webpush.generateVAPIDKeys();
+        db.pushConfig = { publicKey: keys.publicKey, privateKey: keys.privateKey };
+        saveDatabase(db);
+        console.log("Generated Family Web Push VAPID keys");
+    } catch (e) {
+        console.error("VAPID setup error:", e.message);
+    }
+}
+ensurePushConfig();
+if (db.pushConfig?.publicKey && db.pushConfig?.privateKey) {
+    webpush.setVapidDetails(
+        process.env.VAPID_SUBJECT || "mailto:family@example.com",
+        db.pushConfig.publicKey,
+        db.pushConfig.privateKey
+    );
+}
+
+async function sendPushToUsers(userIds, payload) {
+    if (!db.pushConfig?.publicKey || !db.pushConfig?.privateKey) return;
+    const unique = [...new Set(userIds.map(Number))];
+    await Promise.all(unique.map(async id => {
+        const user = db.users.find(u => Number(u.id) === id);
+        if (db.presence?.[String(id)]?.online) return;
+        const sub = user?.notification;
+        if (!sub?.endpoint) return;
+        try {
+            await webpush.sendNotification(sub, JSON.stringify(payload));
+        } catch (e) {
+            const code = e.statusCode || e.status;
+            if (code === 404 || code === 410) {
+                user.notification = null;
+                saveDatabase(db);
+            } else {
+                console.warn("Push error:", e.message);
+            }
+        }
+    }));
+}
+
+function messageUserFields(user) {
+    return { avatar: user?.avatar || "", gender: user?.gender === "female" ? "female" : "male" };
+}
+
+function audioId() {
+    return crypto.randomBytes(12).toString("hex");
+}
+
+function buildMessage(user, text, audio) {
+    const message = {
+        id: 0, authorId: user.id, author: user.name,
+        ...messageUserFields(user),
+        time: new Date().toISOString(), reactions: {}
+    };
+    if (audio) {
+        const data = String(audio.data || "");
+        if (!data.startsWith("data:audio/")) throw new Error("Недопустимый формат голосового сообщения");
+        if (data.length > 3 * 1024 * 1024) throw new Error("Голосовое сообщение слишком большое");
+        message.type = "audio";
+        message.audio = { id: audio.id || audioId(), mime: String(audio.mime || "audio/mp4"), duration: Math.min(600, Math.max(0, Number(audio.duration) || 0)), data, pending: [] };
+    } else {
+        message.type = "text";
+        message.text = String(text || "").trim();
+    }
+    return message;
+}
+
+function cleanupDeliveredAudio() {
+    let changed = false;
+    const chats = [db.globalChat, ...Object.values(db.privateChats || {})];
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const chat of chats) for (const m of chat || []) {
+        if (m.type === "audio" && m.audio?.data && (m.audio.pending?.length === 0 || new Date(m.time).getTime() < cutoff)) {
+            delete m.audio.data;
+            changed = true;
+        }
+    }
+    if (changed) saveDatabase(db);
+}
+cleanupDeliveredAudio();
 
 function nextId(collection) {
 
@@ -816,6 +900,20 @@ const server =
                     return;
                 }
 
+                if (req.method === "PUT" && url.pathname === "/api/me") {
+                    const user = authUser(req);
+                    if (!user) { sendJson(res, 401, {success:false, error:"Не авторизован"}); return; }
+                    if (body.name !== undefined) {
+                        const name = String(body.name).trim();
+                        if (!name) { sendJson(res,400,{success:false,error:"Имя не может быть пустым"}); return; }
+                        user.name = name;
+                    }
+                    if (body.avatar !== undefined) user.avatar = String(body.avatar || "");
+                    saveDatabase(db);
+                    sendJson(res,200,{success:true,user:publicUser(user)});
+                    return;
+                }
+
                 // ==========================================
                 // USERS
                 // ==========================================
@@ -1481,90 +1579,21 @@ const server =
                     url.pathname ===
                         "/api/messages/global"
                 ) {
-
-                    const user =
-                        authUser(req);
-
-                    if (!user) {
-
-                        sendJson(
-                            res,
-                            401,
-                            {
-                                success: false
-                            }
-                        );
-
-                        return;
-                    }
-
-                    const text =
-                        String(
-                            body.text || ""
-                        ).trim();
-
-                    if (!text) {
-
-                        sendJson(
-                            res,
-                            400,
-                            {
-                                success: false,
-                                error:
-                                    "Пустое сообщение"
-                            }
-                        );
-
-                        return;
-                    }
-
-                    const message = {
-
-                        id:
-                            nextId(
-                                db.globalChat
-                            ),
-
-                        authorId:
-                            user.id,
-
-                        author:
-                            user.name,
-
-                        text,
-
-                        time:
-                            new Date()
-                                .toISOString(),
-
-                        reactions: {}
-                    };
-
-                    db.globalChat.push(
-                        message
-                    );
-
-                    saveDatabase(
-                        db
-                    );
-
-                    broadcast({
-
-                        type:
-                            "global_message",
-
-                        message
-                    });
-
-                    sendJson(
-                        res,
-                        201,
-                        {
-                            success: true,
-                            message
-                        }
-                    );
-
+                    const user = authUser(req);
+                    if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
+                    const hasAudio = !!body.audio;
+                    const text = String(body.text || "").trim();
+                    if (!hasAudio && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
+                    let message;
+                    try { message = buildMessage(user, text, hasAudio ? body.audio : null); }
+                    catch (e) { sendJson(res,400,{success:false,error:e.message}); return; }
+                    message.id = nextId(db.globalChat);
+                    if (body.replyTo?.id) message.replyTo = {id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
+                    if (message.type === "audio") message.audio.pending = db.users.filter(u => Number(u.id)!==Number(user.id)).map(u=>Number(u.id));
+                    db.globalChat.push(message); saveDatabase(db);
+                    broadcast({type:"global_message",message});
+                    void sendPushToUsers(db.users.filter(u=>Number(u.id)!==Number(user.id)).map(u=>u.id), {title:`🌌 ${user.name}`, body:message.type==="audio"?"🎙️ Голосовое сообщение":message.text, url:"./", tag:"family-global"});
+                    sendJson(res,201,{success:true,message});
                     return;
                 }
 
@@ -1656,88 +1685,58 @@ const server =
                         return;
                     }
 
-                    if (
-                        req.method ===
-                        "POST"
-                    ) {
-
-                        const text =
-                            String(
-                                body.text ||
-                                    ""
-                            ).trim();
-
-                        if (!text) {
-
-                            sendJson(
-                                res,
-                                400,
-                                {
-                                    success: false,
-                                    error:
-                                        "Пустое сообщение"
-                                }
-                            );
-
-                            return;
-                        }
-
-                        const message = {
-
-                            id:
-                                nextId(
-                                    db.privateChats[
-                                        id
-                                    ]
-                                ),
-
-                            authorId:
-                                user.id,
-
-                            author:
-                                user.name,
-
-                            text,
-
-                            time:
-                                new Date()
-                                    .toISOString(),
-
-                            reactions: {}
-                        };
-
-                        db.privateChats[
-                            id
-                        ].push(
-                            message
-                        );
-
-                        saveDatabase(
-                            db
-                        );
-
-                        broadcast({
-
-                            type:
-                                "private_message",
-
-                            chatId:
-                                id,
-
-                            message
-                        });
-
-                        sendJson(
-                            res,
-                            201,
-                            {
-                                success: true,
-                                message
-                            }
-                        );
-
-                        return;
+                    if (req.method === "POST") {
+                        const hasAudio = !!body.audio;
+                        const text = String(body.text || "").trim();
+                        if (!hasAudio && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
+                        let message;
+                        try { message = buildMessage(user,text,hasAudio ? body.audio : null); }
+                        catch (e) { sendJson(res,400,{success:false,error:e.message}); return; }
+                        message.id = nextId(db.privateChats[id]);
+                        if (body.replyTo?.id) message.replyTo = {id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
+                        if (message.type === "audio") message.audio.pending = [other.id];
+                        db.privateChats[id].push(message); saveDatabase(db);
+                        broadcast({type:"private_message",chatId:id,message});
+                        void sendPushToUsers([other.id], {title:`💌 ${user.name}`,body:message.type==="audio"?"🎙️ Голосовое сообщение":message.text,url:"./",tag:`family-private-${id}`});
+                        sendJson(res,201,{success:true,message}); return;
                     }
+                }
+
+                // ==========================================
+                // MESSAGE EDIT / DELETE / AUDIO DELIVERY
+                // ==========================================
+
+                const messageActionMatch = url.pathname.match(/^\/api\/messages\/(global|private)\/([^/]+)\/(\d+)$/);
+                if (messageActionMatch && (req.method === "PUT" || req.method === "DELETE")) {
+                    const user = authUser(req);
+                    if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
+                    const kind=messageActionMatch[1], key=decodeURIComponent(messageActionMatch[2]), messageId=Number(messageActionMatch[3]);
+                    const chat=kind === "global" ? db.globalChat : db.privateChats[key] || [];
+                    const message=findMessage(chat,messageId);
+                    if (!message) { sendJson(res,404,{success:false,error:"Сообщение не найдено"}); return; }
+                    if (req.method === "PUT") {
+                        if (Number(message.authorId)!==Number(user.id)) { sendJson(res,403,{success:false,error:"Редактировать можно только свои сообщения"}); return; }
+                        if (message.type === "audio") { sendJson(res,400,{success:false,error:"Голосовое сообщение нельзя редактировать"}); return; }
+                        const text=String(body.text||"").trim();
+                        if(!text){sendJson(res,400,{success:false,error:"Текст не может быть пустым"});return;}
+                        message.text=text; message.edited=true; message.editedAt=new Date().toISOString(); saveDatabase(db);
+                        broadcast({type:"message_updated",scope:kind,key,message}); sendJson(res,200,{success:true,message}); return;
+                    }
+                    if (Number(message.authorId)!==Number(user.id) && user.role!=="admin") { sendJson(res,403,{success:false,error:"Удалить можно только своё сообщение"}); return; }
+                    const index=chat.indexOf(message); if(index>=0) chat.splice(index,1); saveDatabase(db);
+                    broadcast({type:"message_deleted",scope:kind,key,messageId}); sendJson(res,200,{success:true}); return;
+                }
+
+                if (req.method === "POST" && url.pathname === "/api/audio/ack") {
+                    const user=authUser(req); if(!user){sendJson(res,401,{success:false});return;}
+                    const scope=String(body.scope||""), key=String(body.key||""), messageId=Number(body.messageId);
+                    const chat=scope==="global"?db.globalChat:db.privateChats[key]||[]; const message=findMessage(chat,messageId);
+                    if(message?.type==="audio"&&message.audio){
+                        message.audio.pending=(message.audio.pending||[]).filter(id=>Number(id)!==Number(user.id));
+                        if(message.audio.pending.length===0) delete message.audio.data;
+                        saveDatabase(db);
+                    }
+                    sendJson(res,200,{success:true}); return;
                 }
 
                 // ==========================================
@@ -1919,6 +1918,11 @@ const server =
                 }
 
                 // ==========================================
+                if (req.method === "GET" && url.pathname === "/api/push/public-key") {
+                    if (!db.pushConfig?.publicKey) { sendJson(res,503,{success:false,error:"Push ещё не настроен"}); return; }
+                    sendJson(res,200,{success:true,publicKey:db.pushConfig.publicKey}); return;
+                }
+
                 // NOTIFICATIONS / PUSH SUBSCRIPTION
                 // ==========================================
 
