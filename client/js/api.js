@@ -48,6 +48,7 @@ const API = {
     async deleteMessage(scope,key,messageId) { return this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}`,{method:"DELETE"}); },
     async pushPublicKey() { return (await this.request("/api/push/public-key")).publicKey; },
     async pushSubscribe(subscription) { return this.request("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
+    async notificationStatus() { return this.request("/api/notifications/status"); },
     async pushUnsubscribe(endpoint) { return this.request("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
 
     connectWS(onMessage) {

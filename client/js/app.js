@@ -184,23 +184,47 @@ const App = {
 
     async updatePushStatus(){
         const el=document.getElementById("pushStatus");if(!el)return;
-        if(!("Notification" in window)||!("serviceWorker" in navigator)){el.textContent="Этот браузер не поддерживает web-уведомления";return;}
-        el.textContent=Notification.permission==="granted"?"Разрешены":"Нажмите «Включить» и разрешите уведомления";
+        if(!("Notification" in window)||!("serviceWorker" in navigator)||!("PushManager" in window)){el.textContent="Этот браузер не поддерживает push";return;}
+        const standalone=window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone===true;
+        if(/iPhone|iPad|iPod/i.test(navigator.userAgent) && !standalone){el.textContent="Добавьте Family на экран «Домой»";return;}
+        if(Notification.permission!=="granted"){el.textContent="Нажмите «Включить» и разрешите уведомления";return;}
+        try{
+            const sub=this.notificationRegistration && await this.notificationRegistration.pushManager.getSubscription();
+            if(sub){el.textContent="Разрешены и подключены";return;}
+            const status=await API.notificationStatus();
+            el.textContent=status.enabled?"Разрешены и подключены":"Разрешены, но подписка не создана";
+        }catch(e){el.textContent=`Ошибка API: ${e.message}`;}
     },
     async enableNotifications(){
-        if(!window.isSecureContext){alert("Для уведомлений нужен HTTPS. GitHub Pages подходит.");return;}
-        if(!window.Notification || !navigator.serviceWorker || !window.PushManager){alert("Этот браузер не поддерживает web push");return;}
-        // Permission is requested directly from the user's tap, as required by iOS Safari.
-        const permission=await Notification.requestPermission();
-        if(permission!=="granted"){this.updatePushStatus();return;}
         try{
+            if(!window.isSecureContext) throw new Error("Для уведомлений нужен HTTPS.");
+            if(!window.Notification || !navigator.serviceWorker || !window.PushManager) throw new Error("Этот браузер не поддерживает push-уведомления.");
+            // iPhone/iPad: Web Push requires the site to be installed as a Home Screen web app.
+            const standalone = window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+            if(/iPhone|iPad|iPod/i.test(navigator.userAgent) && !standalone){
+                throw new Error("На iPhone сначала добавьте Family на экран «Домой», затем откройте приложение с иконки и снова включите уведомления.");
+            }
+            const permission=await Notification.requestPermission();
+            if(permission!=="granted"){this.updatePushStatus();throw new Error("Разрешение на уведомления не предоставлено.");}
             if(!this.notificationRegistration) await this.initPWA();
-            if(!this.notificationRegistration)throw new Error("Не удалось запустить Service Worker");
+            if(!this.notificationRegistration) throw new Error("Service Worker не запустился.");
             const key=await API.pushPublicKey();
-            const subscription=await this.notificationRegistration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:this.urlBase64ToUint8Array(key)});
+            if(!key) throw new Error("Сервер не вернул ключ push. Обновите server.js на Family v6.2.");
+            let subscription=await this.notificationRegistration.pushManager.getSubscription();
+            if(!subscription){
+                subscription=await this.notificationRegistration.pushManager.subscribe({
+                    userVisibleOnly:true,
+                    applicationServerKey:this.urlBase64ToUint8Array(key)
+                });
+            }
             await API.pushSubscribe(subscription.toJSON());
-            this.updatePushStatus();this.toast("🔔 Уведомления","Family теперь сможет сообщать о новых сообщениях");
-        }catch(e){console.error(e);alert("Не удалось включить уведомления: "+e.message);}
+            await this.updatePushStatus();
+            this.toast("🔔 Уведомления","Family теперь сможет сообщать о новых сообщениях");
+        }catch(e){
+            console.error("Push:",e);
+            await this.updatePushStatus();
+            alert(e?.message || "Не удалось включить уведомления");
+        }
     },
     async ensurePushSubscription(ask){
         if(!("Notification" in window)||Notification.permission!=="granted")return;
@@ -305,38 +329,46 @@ const App = {
     async react(scope,key,id,emoji){try{await API.react(scope,key,id,emoji);}catch(e){alert(e.message);}},
 
     async toggleRecording(scope,id){
-        if(this.mediaRecorder && this.mediaRecorder.state==="recording"){this.mediaRecorder.stop();return;}
+        if(this.audioSending){return;}
+        if(this.mediaRecorder && this.mediaRecorder.state==="recording"){
+            try{if(typeof this.mediaRecorder.requestData==="function")this.mediaRecorder.requestData();}catch{}
+            this.mediaRecorder.stop();
+            return;
+        }
         if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){alert("Голосовые сообщения не поддерживаются этим браузером");return;}
         try{
             this.mediaStream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
             const candidates=["audio/mp4;codecs=mp4a.40.2","audio/mp4","audio/webm;codecs=opus","audio/webm"];
-            const mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x));
+            const mime=candidates.find(x=>typeof MediaRecorder.isTypeSupported!=="function"||MediaRecorder.isTypeSupported(x));
             this.mediaRecorder=mime?new MediaRecorder(this.mediaStream,{mimeType:mime,audioBitsPerSecond:64000}):new MediaRecorder(this.mediaStream);
-            this.recordingChunks=[];this.recordingStarted=Date.now();
-            let failed=false;
-            this.mediaRecorder.onerror=()=>{failed=true;this.stopRecordingResources();alert("Во время записи произошла ошибка. Попробуйте ещё раз.");};
-            this.mediaRecorder.ondataavailable=e=>{if(e.data&&e.data.size)this.recordingChunks.push(e.data);};
-            this.mediaRecorder.onstop=async()=>{
+            this.recordingChunks=[];this.recordingStarted=Date.now();this.audioSending=false;
+            const recorder=this.mediaRecorder;
+            recorder.onerror=()=>{this.stopRecordingResources();alert("Во время записи произошла ошибка. Попробуйте ещё раз.");};
+            recorder.ondataavailable=e=>{if(e.data&&e.data.size)this.recordingChunks.push(e.data);};
+            recorder.onstop=async()=>{
                 clearInterval(this.recordingTimer);this.setRecordingUI(false);
-                const recorder=this.mediaRecorder;const stream=this.mediaStream;this.mediaRecorder=null;this.mediaStream=null;
+                const stream=this.mediaStream;this.mediaRecorder=null;this.mediaStream=null;
                 stream?.getTracks().forEach(t=>t.stop());
-                if(failed)return;
-                const duration=(Date.now()-this.recordingStarted)/1000;if(duration<0.5)return;
-                const type=recorder?.mimeType||mime||"audio/mp4";
-                const blob=new Blob(this.recordingChunks,{type});
+                const chunks=this.recordingChunks.slice();this.recordingChunks=[];
+                const duration=(Date.now()-this.recordingStarted)/1000;
+                if(duration<0.7||!chunks.length)return;
+                const type=recorder.mimeType||mime||"audio/mp4";
+                const blob=new Blob(chunks,{type});
                 if(!blob.size){alert("Запись получилась пустой. Попробуйте ещё раз.");return;}
-                const data=await this.blobToDataURL(blob);
-                const audio={mime:blob.type,data,duration};
+                this.audioSending=true;this.setRecordingUI("sending");
                 try{
+                    const data=await this.blobToDataURL(blob);
+                    const audio={mime:blob.type||type,data,duration:Math.round(duration*10)/10};
                     const sent=scope==="global"?await API.sendGlobalAudio(audio,this.replyTarget):await API.sendPrivateAudio(id,audio,this.replyTarget);
-                    if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type,duration);
-                    this.replyTarget=null;
-                    this.cosmicSound("send");
-                    if(scope==="global")this.openGlobalChat();else this.openPrivateChat(id);
-                }catch(e){alert(e.message);}
+                    if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type||type,duration);
+                    this.replyTarget=null;this.audioSending=false;this.hideKeyboard();this.cosmicSound("send");
+                    if(scope==="global")await this.openGlobalChat();else await this.openPrivateChat(id);
+                }catch(e){
+                    this.audioSending=false;this.setRecordingUI(false);
+                    alert("Не удалось отправить голосовое: "+(e?.message||"ошибка сервера"));
+                }
             };
-            // A short timeslice makes Safari/iPhone deliver chunks reliably instead of waiting for stop().
-            this.mediaRecorder.start(250);this.setRecordingUI(true);this.cosmicSound("record");
+            recorder.start(250);this.setRecordingUI(true);this.cosmicSound("record");
         }catch(e){this.stopRecordingResources();alert("Не удалось получить доступ к микрофону: "+(e?.message||"проверьте разрешение микрофона"));}
     },
     stopRecordingResources(){clearInterval(this.recordingTimer);this.recordingTimer=null;this.mediaStream?.getTracks().forEach(t=>t.stop());this.mediaStream=null;this.mediaRecorder=null;this.setRecordingUI(false);},
@@ -348,7 +380,7 @@ const App = {
             try{const item=await MediaVault.get(el.dataset.audioId);if(item?.blob)el.src=URL.createObjectURL(item.blob);}catch(e){console.warn("Local audio:",e);}
         }
     },
-    setRecordingUI(active){const btn=document.getElementById("micBtn");if(!btn)return;if(active){btn.classList.add("recording");btn.innerHTML='<span class="record-dot">●</span><span class="record-time">0:00</span>';this.recordingTimer=setInterval(()=>{const s=(Date.now()-this.recordingStarted)/1000;const t=btn.querySelector(".record-time");if(t)t.textContent=this.formatDuration(s);btn.title=`Запись ${this.formatDuration(s)}`;},250);}else{btn.classList.remove("recording");btn.textContent="🎙️";btn.title="Голосовое сообщение";}},
+    setRecordingUI(active){const btn=document.getElementById("micBtn");if(!btn)return;if(active==="sending"){btn.classList.add("recording");btn.innerHTML="⏳";btn.title="Отправка голосового…";return;}if(active){btn.classList.add("recording");btn.innerHTML='<span class="record-dot">●</span><span class="record-time">0:00</span>';this.recordingTimer=setInterval(()=>{const s=(Date.now()-this.recordingStarted)/1000;const t=btn.querySelector(".record-time");if(t)t.textContent=this.formatDuration(s);btn.title=`Запись ${this.formatDuration(s)}`;},250);}else{clearInterval(this.recordingTimer);this.recordingTimer=null;btn.classList.remove("recording");btn.textContent="🎙️";btn.title="Голосовое сообщение";}},
     blobToDataURL(blob){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob);});},
 
     async cacheFetchedAudio(messages,global,otherId){
