@@ -8,6 +8,7 @@ const webpush = require("web-push");
 const HOST = "0.0.0.0";
 const PORT = Number(process.env.PORT || 8000);
 const DATA_FILE = path.join(__dirname, "data", "family.json");
+const VAPID_FILE = path.join(__dirname, "data", "vapid.json");
 
 function defaultDatabase() {
     return {
@@ -115,24 +116,32 @@ function saveDatabase(db) {
 const db = loadDatabase();
 
 function ensurePushConfig() {
-    if (db.pushConfig?.publicKey && db.pushConfig?.privateKey) return;
     try {
-        const keys = webpush.generateVAPIDKeys();
-        db.pushConfig = { publicKey: keys.publicKey, privateKey: keys.privateKey };
-        saveDatabase(db);
-        console.log("Generated Family Web Push VAPID keys");
+        fs.mkdirSync(path.dirname(VAPID_FILE), {recursive:true});
+        let cfg = null;
+        if (fs.existsSync(VAPID_FILE)) {
+            try { cfg = JSON.parse(fs.readFileSync(VAPID_FILE, "utf8")); } catch {}
+        }
+        if (!cfg?.publicKey || !cfg?.privateKey) {
+            const keys = webpush.generateVAPIDKeys();
+            cfg = { publicKey: keys.publicKey, privateKey: keys.privateKey };
+            const tmp = VAPID_FILE + ".tmp";
+            fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), "utf8");
+            fs.renameSync(tmp, VAPID_FILE);
+            console.log("Generated Family Web Push VAPID keys");
+        }
+        webpush.setVapidDetails(
+            process.env.VAPID_SUBJECT || "mailto:family@example.com",
+            cfg.publicKey,
+            cfg.privateKey
+        );
+        return cfg;
     } catch (e) {
         console.error("VAPID setup error:", e.message);
+        return null;
     }
 }
-ensurePushConfig();
-if (db.pushConfig?.publicKey && db.pushConfig?.privateKey) {
-    webpush.setVapidDetails(
-        process.env.VAPID_SUBJECT || "mailto:family@example.com",
-        db.pushConfig.publicKey,
-        db.pushConfig.privateKey
-    );
-}
+const pushConfig = ensurePushConfig();
 
 async function sendPushToUsers(userIds, payload) {
     if (!db.pushConfig?.publicKey || !db.pushConfig?.privateKey) return;
@@ -171,14 +180,10 @@ function buildMessage(user, text, audio) {
     };
     if (audio) {
         const data = String(audio.data || "");
-        const url = String(audio.url || "");
-        if (!url && !data.startsWith("data:audio/")) throw new Error("Недопустимый формат голосового сообщения");
+        if (!data.startsWith("data:audio/")) throw new Error("Недопустимый формат голосового сообщения");
         if (data.length > 3 * 1024 * 1024) throw new Error("Голосовое сообщение слишком большое");
-        if (url && !/^https?:\/\//i.test(url)) throw new Error("Недопустимый адрес аудио");
         message.type = "audio";
-        message.audio = { id: audio.id || audioId(), mime: String(audio.mime || "audio/mp4"), duration: Math.min(600, Math.max(0, Number(audio.duration) || 0)), pending: [] };
-        if (url) message.audio.url = url;
-        else message.audio.data = data;
+        message.audio = { id: audio.id || audioId(), mime: String(audio.mime || "audio/mp4"), duration: Math.min(600, Math.max(0, Number(audio.duration) || 0)), data, pending: [] };
     } else {
         message.type = "text";
         message.text = String(text || "").trim();
@@ -661,15 +666,6 @@ const server =
                 res.end();
 
                 return;
-            }
-
-            const mediaMatch = req.url.split("?")[0].match(/^\/media\/audio\/([a-f0-9]+\.(?:m4a|webm|ogg|wav|mp3|aac))$/i);
-            if (req.method === "GET" && mediaMatch) {
-                const file = path.resolve(__dirname,"data","audio",mediaMatch[1]);
-                const root = path.resolve(__dirname,"data","audio") + path.sep;
-                if (!file.startsWith(root) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end("Not Found"); return; }
-                const ext=path.extname(file).toLowerCase(); const types={".m4a":"audio/mp4",".webm":"audio/webm",".ogg":"audio/ogg",".wav":"audio/wav",".mp3":"audio/mpeg",".aac":"audio/aac"};
-                res.writeHead(200,{"Content-Type":types[ext]||"application/octet-stream","Cache-Control":"public, max-age=31536000","Accept-Ranges":"bytes"}); fs.createReadStream(file).pipe(res); return;
             }
 
             if (
@@ -1586,29 +1582,6 @@ const server =
                     return;
                 }
 
-                if (req.method === "POST" && url.pathname === "/api/audio/upload") {
-                    const user = authUser(req);
-                    if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
-                    const mime = String(req.headers["content-type"] || "audio/mp4").split(";")[0].toLowerCase();
-                    if (!mime.startsWith("audio/")) { sendJson(res,400,{success:false,error:"Ожидался аудиофайл"}); return; }
-                    const extMap = {"audio/mp4":"m4a","audio/webm":"webm","audio/ogg":"ogg","audio/wav":"wav","audio/mpeg":"mp3","audio/aac":"aac"};
-                    const ext = extMap[mime] || "bin";
-                    const chunks=[]; let total=0; let tooLarge=false;
-                    await new Promise((resolve,reject)=>{
-                        req.on("data", chunk=>{ total += chunk.length; if(total > 5*1024*1024){tooLarge=true; return;} chunks.push(chunk); });
-                        req.on("end",resolve); req.on("error",reject);
-                    });
-                    if(tooLarge){sendJson(res,413,{success:false,error:"Голосовое сообщение слишком большое"});return;}
-                    if(!total){sendJson(res,400,{success:false,error:"Пустой аудиофайл"});return;}
-                    const dir=path.join(__dirname,"data","audio"); fs.mkdirSync(dir,{recursive:true});
-                    const id=audioId(), fileName=`${id}.${ext}`, filePath=path.join(dir,fileName);
-                    fs.writeFileSync(filePath,Buffer.concat(chunks));
-                    const proto=req.headers["x-forwarded-proto"] || "http";
-                    const host=req.headers["x-forwarded-host"] || req.headers.host;
-                    const urlOut=`${proto}://${host}/media/audio/${fileName}`;
-                    sendJson(res,201,{success:true,id,url:urlOut,mime,size:total}); return;
-                }
-
                 if (
                     req.method === "POST" &&
                     url.pathname ===
@@ -1953,9 +1926,9 @@ const server =
                 }
 
                 // ==========================================
-                if (req.method === "GET" && url.pathname === "/api/push/public-key") {
-                    if (!db.pushConfig?.publicKey) { sendJson(res,503,{success:false,error:"Push ещё не настроен"}); return; }
-                    sendJson(res,200,{success:true,publicKey:db.pushConfig.publicKey}); return;
+                if (req.method === "GET" && (url.pathname === "/api/push/public-key" || url.pathname === "/api/notifications/public-key")) {
+                    if (!pushConfig?.publicKey) { sendJson(res,503,{success:false,error:"Push ещё не настроен"}); return; }
+                    sendJson(res,200,{success:true,publicKey:pushConfig.publicKey}); return;
                 }
 
                 // NOTIFICATIONS / PUSH SUBSCRIPTION
@@ -2111,6 +2084,22 @@ const server =
                         }
                     );
 
+                    return;
+                }
+
+                // ==========================================
+                // PUSH TEST
+                // ==========================================
+                if (req.method === "POST" && url.pathname === "/api/notifications/test") {
+                    const user = authUser(req);
+                    if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
+                    if (!user.notification?.endpoint) { sendJson(res,400,{success:false,error:"На этом аккаунте нет push-подписки"}); return; }
+                    try {
+                        await sendPushToUsers([user.id], {title:"🔔 Family", body:"Тестовое уведомление работает", url:"./", tag:"family-test"});
+                        sendJson(res,200,{success:true,message:"Push отправлен"});
+                    } catch (e) {
+                        sendJson(res,500,{success:false,error:e.message || "Не удалось отправить push"});
+                    }
                     return;
                 }
 
