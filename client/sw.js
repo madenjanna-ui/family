@@ -1,13 +1,13 @@
-const CACHE = "family-shell-v7-voice-push";
+const CACHE = "family-shell-v6-3-push";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
   "./css/style.css?v=23",
   "./js/config.js?v=3",
-  "./js/api.js?v=24",
+  "./js/api.js?v=23",
   "./js/auth.js?v=10",
-  "./js/app.js?v=24",
+  "./js/app.js?v=23",
   "./assets/icon-180.png",
   "./assets/icon-512.png",
   "./js/media.js?v=2"
@@ -40,7 +40,8 @@ self.addEventListener("push", event => {
     badge: "./assets/icon-180.png",
     tag: data.tag || "family-message",
     renotify: true,
-    data: { url: data.url || "./" }
+    requireInteraction: Boolean(data.requireInteraction),
+    data: { url: data.url || "./", tag: data.tag || "family-message" }
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
