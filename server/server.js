@@ -144,7 +144,7 @@ function ensurePushConfig() {
 const pushConfig = ensurePushConfig();
 
 async function sendPushToUsers(userIds, payload) {
-    if (!db.pushConfig?.publicKey || !db.pushConfig?.privateKey) return;
+   if (!pushConfig?.publicKey || !pushConfig?.privateKey) return;
     const unique = [...new Set(userIds.map(Number))];
     await Promise.all(unique.map(async id => {
         const user = db.users.find(u => Number(u.id) === id);
