@@ -342,7 +342,7 @@ const App = {
     async toggleRecording(scope,id){
         if(this.audioSending){return;}
         if(this.mediaRecorder && this.mediaRecorder.state==="recording"){
-            try{if(typeof this.mediaRecorder.requestData==="function")this.mediaRecorder.requestData();}catch{}
+            // Safari/iPhone can lose the last chunk when requestData() is called immediately before stop()
             this.mediaRecorder.stop();
             return;
         }
