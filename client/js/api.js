@@ -9,7 +9,7 @@ const API = {
         const res = await fetch(`${FAMILY_API_BASE}${path}`, {...options, headers});
         let data = {};
         try { data = await res.json(); } catch {}
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status} ${res.statusText || ""}`.trim());
         return data;
     },
 

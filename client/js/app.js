@@ -20,7 +20,7 @@ const App = {
 
     async start() {
         this.applyAppearance();
-        this.initPWA();
+        await this.initPWA();
         if (await Auth.autoLogin()) {
             this.connectRealtime();
             await this.showHome();
@@ -29,9 +29,13 @@ const App = {
     },
 
     async initPWA() {
-        if (!("serviceWorker" in navigator)) return;
-        try { this.notificationRegistration = await navigator.serviceWorker.register("sw.js", {scope:"./"}); }
-        catch(e) { console.warn("Service worker:", e); }
+        if (!("serviceWorker" in navigator)) return null;
+        try {
+            this.notificationRegistration = await navigator.serviceWorker.register("sw.js", {scope:"./"});
+            await navigator.serviceWorker.ready;
+            this.notificationRegistration = await navigator.serviceWorker.getRegistration("./") || this.notificationRegistration;
+            return this.notificationRegistration;
+        } catch(e) { console.warn("Service worker:", e); return null; }
     },
 
     connectRealtime() {
@@ -342,8 +346,7 @@ const App = {
     async toggleRecording(scope,id){
         if(this.audioSending){return;}
         if(this.mediaRecorder && this.mediaRecorder.state==="recording"){
-            // Safari/iPhone can lose the last chunk when requestData() is called immediately before stop()
-            this.mediaRecorder.stop();
+            try{this.mediaRecorder.stop();}catch(e){console.warn("MediaRecorder stop:",e);}
             return;
         }
         if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){alert("Голосовые сообщения не поддерживаются этим браузером");return;}
@@ -362,7 +365,7 @@ const App = {
                 stream?.getTracks().forEach(t=>t.stop());
                 const chunks=this.recordingChunks.slice();this.recordingChunks=[];
                 const duration=(Date.now()-this.recordingStarted)/1000;
-                if(duration<0.7||!chunks.length)return;
+                if(duration<0.7||!chunks.length){this.audioSending=false;return;}
                 const type=recorder.mimeType||mime||"audio/mp4";
                 const blob=new Blob(chunks,{type});
                 if(!blob.size){alert("Запись получилась пустой. Попробуйте ещё раз.");return;}
