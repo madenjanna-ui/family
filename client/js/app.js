@@ -57,11 +57,10 @@ const App = {
 
     async messageArrived(message, global) {
         this.cosmicSound("message");
-        if(message?.type==="audio"&&message.audio?.id&&(message.audio.url||message.audio.data)){
+        if(message?.type==="audio"&&message.audio?.data&&message.audio?.id){
             try{
-                const source=message.audio.url||message.audio.data;
-                const blob=await (await fetch(source)).blob();
-                await MediaVault.put(message.audio.id,blob,message.audio.mime||blob.type,message.audio.duration);
+                const blob=await (await fetch(message.audio.data)).blob();
+                await MediaVault.put(message.audio.id,blob,message.audio.mime,message.audio.duration);
                 const key=global?"global":this.getPrivateChatId(Auth.currentUser.id,message.authorId);
                 await API.audioAck(global?"global":"private",key,message.id,message.audio.id);
             }catch(e){console.warn("Audio delivery:",e);}
@@ -142,7 +141,7 @@ const App = {
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>🪐 Профиль</h1></div><div class="content">
         <div class="profile-card"><div id="profileAvatar">${this.avatarHtml(u,92)}</div><div><h2>${this.esc(u.name)}</h2><small>@${this.esc(u.login)}</small></div></div>
         <div class="card form"><label class="field-label">Имя</label><input id="profileName" value="${this.attr(u.name)}"><label class="field-label">Аватар</label><input id="avatarFile" type="file" accept="image/*" onchange="App.previewAvatar(event)"><div class="avatar-actions"><button class="secondary" onclick="App.removeAvatar()">Удалить аватар</button><button class="primary" onclick="App.saveProfile()">Сохранить</button></div></div>
-        <div class="card settings-card"><div><b>🔔 Уведомления</b><small id="pushStatus">Проверка…</small></div><button class="primary" onclick="App.enableNotifications()">Включить</button></div>
+        <div class="card settings-card"><div><b>🔔 Уведомления</b><small id="pushStatus">Проверка…</small></div><div style="display:flex;gap:8px"><button class="secondary" onclick="App.testNotification()">Проверить</button><button class="primary" onclick="App.enableNotifications()">Включить</button></div></div>
         <div class="card settings-card"><div><b>🌌 Космические звуки</b><small>Звук при новых сообщениях и действиях</small></div><button class="secondary" onclick="App.toggleSound()">${localStorage.getItem("FamilySound")==="off"?"Включить":"Выключить"}</button></div>
         <div class="card appearance-card"><div class="appearance-head"><div><b>🎨 Оформление</b><small>Выбери атмосферу Family</small></div><span class="appearance-current">${themeNames[this.appearanceTheme]}</span></div>
           <div class="theme-grid">
@@ -196,6 +195,8 @@ const App = {
             const sub=this.notificationRegistration && await this.notificationRegistration.pushManager.getSubscription();
             if(sub){el.textContent="Разрешены и подключены";return;}
             const status=await API.notificationStatus();
+            const diag=await API.notificationDiagnostics();
+            if (!diag.vapidConfigured) { el.textContent="Сервер: VAPID не настроен"; return; }
             el.textContent=status.enabled?"Разрешены и подключены":"Разрешены, но подписка не создана";
         }catch(e){el.textContent=`Ошибка API: ${e.message}`;}
     },
@@ -230,6 +231,21 @@ const App = {
             alert(e?.message || "Не удалось включить уведомления");
         }
     },
+    async testNotification(){
+        try{
+            if(Notification.permission!=="granted") throw new Error("Сначала нажмите «Включить» и разрешите уведомления.");
+            if(!this.notificationRegistration) await this.initPWA();
+            const existing=await this.notificationRegistration?.pushManager.getSubscription();
+            if(!existing) throw new Error("Подписка push не создана. Сначала включите уведомления.");
+            await API.pushSubscribe(existing.toJSON());
+            const result=await API.testNotification();
+            this.toast("🔔 Family", result.message || "Тест отправлен");
+        }catch(e){
+            console.error("Push test:",e);
+            alert(e?.message || "Тест push не выполнен");
+        }
+    },
+
     async ensurePushSubscription(ask){
         if(!("Notification" in window)||Notification.permission!=="granted")return;
         try{
@@ -318,8 +334,8 @@ const App = {
         const authorUser=this.usersCache.find(u=>Number(u.id)===Number(m.authorId))||m;
         const avatar=!mine?this.avatarHtml(authorUser,34):"";
         const hasAudio=m.type==="audio"&&m.audio;
-        const audioSrc=hasAudio&&(m.audio.url||m.audio.data)?this.attr(m.audio.url||m.audio.data):"";
-        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.url||m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
+        const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
+        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
         const reply=m.replyTo?`<div class="reply-quote">↩️ ${this.esc(m.replyTo.author||"")}<br><span>${this.esc(m.replyTo.text||"Голосовое сообщение")}</span></div>`:"";
         const favorite=this.isFavorite(scope,key,m.id);
         const menu=`<button class="message-menu-btn" onclick="event.stopPropagation();App.messageMenu(event,'${scope}','${key}',${m.id},${mine})">⋯</button>`;
@@ -369,8 +385,8 @@ const App = {
                 if(!blob.size){alert("Запись получилась пустой. Попробуйте ещё раз.");return;}
                 this.audioSending=true;this.setRecordingUI("sending");
                 try{
-                    const uploaded=await API.uploadAudio(blob);
-                    const audio={id:uploaded.id,url:uploaded.url,mime:uploaded.mime||blob.type||type,size:blob.size,duration:Math.round(duration*10)/10};
+                    const data=await this.blobToDataURL(blob);
+                    const audio={mime:blob.type||type,data,duration:Math.round(duration*10)/10};
                     const sent=scope==="global"?await API.sendGlobalAudio(audio,this.replyTarget):await API.sendPrivateAudio(id,audio,this.replyTarget);
                     if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type||type,duration);
                     this.replyTarget=null;this.audioSending=false;this.hideKeyboard();this.cosmicSound("send");

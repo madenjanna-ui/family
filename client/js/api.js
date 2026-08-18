@@ -34,14 +34,6 @@ const API = {
     async deleteUser(id) { return this.request(`/api/users/${id}`,{method:"DELETE"}); },
     async globalMessages() { return (await this.request("/api/messages/global")).messages; },
     async sendGlobal(text,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
-    async uploadAudio(blob) {
-        const headers = {"Content-Type": blob.type || "application/octet-stream"};
-        if (this.token) headers.Authorization = `Bearer ${this.token}`;
-        const res = await fetch(`${FAMILY_API_BASE}/api/audio/upload`, {method:"POST",headers,body:blob});
-        let data={}; try { data=await res.json(); } catch {}
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        return data;
-    },
     async sendGlobalAudio(audio,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({audio,replyTo})})).message; },
     async privateMessages(id) { return (await this.request(`/api/messages/private/${id}`)).messages; },
     async sendPrivate(id,text,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
@@ -57,7 +49,9 @@ const API = {
     async pushPublicKey() { return (await this.request("/api/push/public-key")).publicKey; },
     async pushSubscribe(subscription) { return this.request("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
     async notificationStatus() { return this.request("/api/notifications/status"); },
-    async pushUnsubscribe(endpoint) { return this.request("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
+    async notificationDiagnostics() { return this.request("/api/notifications/diagnostics"); },
+    async testNotification() { return this.request("/api/notifications/test",{method:"POST"}); },
+    async pushUnsubscribe(endpoint) { return this.request("/api/notifications/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
 
     connectWS(onMessage) {
         const base = FAMILY_API_BASE || location.origin;
