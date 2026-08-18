@@ -139,7 +139,6 @@ async function sendPushToUsers(userIds, payload) {
     const unique = [...new Set(userIds.map(Number))];
     await Promise.all(unique.map(async id => {
         const user = db.users.find(u => Number(u.id) === id);
-        if (db.presence?.[String(id)]?.online) return;
         const sub = user?.notification;
         if (!sub?.endpoint) return;
         try {
@@ -172,10 +171,14 @@ function buildMessage(user, text, audio) {
     };
     if (audio) {
         const data = String(audio.data || "");
-        if (!data.startsWith("data:audio/")) throw new Error("Недопустимый формат голосового сообщения");
+        const url = String(audio.url || "");
+        if (!url && !data.startsWith("data:audio/")) throw new Error("Недопустимый формат голосового сообщения");
         if (data.length > 3 * 1024 * 1024) throw new Error("Голосовое сообщение слишком большое");
+        if (url && !/^https?:\/\//i.test(url)) throw new Error("Недопустимый адрес аудио");
         message.type = "audio";
-        message.audio = { id: audio.id || audioId(), mime: String(audio.mime || "audio/mp4"), duration: Math.min(600, Math.max(0, Number(audio.duration) || 0)), data, pending: [] };
+        message.audio = { id: audio.id || audioId(), mime: String(audio.mime || "audio/mp4"), duration: Math.min(600, Math.max(0, Number(audio.duration) || 0)), pending: [] };
+        if (url) message.audio.url = url;
+        else message.audio.data = data;
     } else {
         message.type = "text";
         message.text = String(text || "").trim();
@@ -658,6 +661,15 @@ const server =
                 res.end();
 
                 return;
+            }
+
+            const mediaMatch = req.url.split("?")[0].match(/^\/media\/audio\/([a-f0-9]+\.(?:m4a|webm|ogg|wav|mp3|aac))$/i);
+            if (req.method === "GET" && mediaMatch) {
+                const file = path.resolve(__dirname,"data","audio",mediaMatch[1]);
+                const root = path.resolve(__dirname,"data","audio") + path.sep;
+                if (!file.startsWith(root) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end("Not Found"); return; }
+                const ext=path.extname(file).toLowerCase(); const types={".m4a":"audio/mp4",".webm":"audio/webm",".ogg":"audio/ogg",".wav":"audio/wav",".mp3":"audio/mpeg",".aac":"audio/aac"};
+                res.writeHead(200,{"Content-Type":types[ext]||"application/octet-stream","Cache-Control":"public, max-age=31536000","Accept-Ranges":"bytes"}); fs.createReadStream(file).pipe(res); return;
             }
 
             if (
@@ -1572,6 +1584,29 @@ const server =
                     );
 
                     return;
+                }
+
+                if (req.method === "POST" && url.pathname === "/api/audio/upload") {
+                    const user = authUser(req);
+                    if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
+                    const mime = String(req.headers["content-type"] || "audio/mp4").split(";")[0].toLowerCase();
+                    if (!mime.startsWith("audio/")) { sendJson(res,400,{success:false,error:"Ожидался аудиофайл"}); return; }
+                    const extMap = {"audio/mp4":"m4a","audio/webm":"webm","audio/ogg":"ogg","audio/wav":"wav","audio/mpeg":"mp3","audio/aac":"aac"};
+                    const ext = extMap[mime] || "bin";
+                    const chunks=[]; let total=0; let tooLarge=false;
+                    await new Promise((resolve,reject)=>{
+                        req.on("data", chunk=>{ total += chunk.length; if(total > 5*1024*1024){tooLarge=true; return;} chunks.push(chunk); });
+                        req.on("end",resolve); req.on("error",reject);
+                    });
+                    if(tooLarge){sendJson(res,413,{success:false,error:"Голосовое сообщение слишком большое"});return;}
+                    if(!total){sendJson(res,400,{success:false,error:"Пустой аудиофайл"});return;}
+                    const dir=path.join(__dirname,"data","audio"); fs.mkdirSync(dir,{recursive:true});
+                    const id=audioId(), fileName=`${id}.${ext}`, filePath=path.join(dir,fileName);
+                    fs.writeFileSync(filePath,Buffer.concat(chunks));
+                    const proto=req.headers["x-forwarded-proto"] || "http";
+                    const host=req.headers["x-forwarded-host"] || req.headers.host;
+                    const urlOut=`${proto}://${host}/media/audio/${fileName}`;
+                    sendJson(res,201,{success:true,id,url:urlOut,mime,size:total}); return;
                 }
 
                 if (
