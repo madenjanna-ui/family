@@ -1,4 +1,4 @@
-const CACHE = "family-shell-v7-1-0";
+const CACHE = "family-shell-v7-voice-push";
 const SHELL = [
   "./",
   "./index.html",
