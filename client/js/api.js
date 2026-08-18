@@ -9,7 +9,7 @@ const API = {
         const res = await fetch(`${FAMILY_API_BASE}${path}`, {...options, headers});
         let data = {};
         try { data = await res.json(); } catch {}
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status} ${res.statusText || ""}`.trim());
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         return data;
     },
 
@@ -34,6 +34,14 @@ const API = {
     async deleteUser(id) { return this.request(`/api/users/${id}`,{method:"DELETE"}); },
     async globalMessages() { return (await this.request("/api/messages/global")).messages; },
     async sendGlobal(text,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
+    async uploadAudio(blob) {
+        const headers = {"Content-Type": blob.type || "application/octet-stream"};
+        if (this.token) headers.Authorization = `Bearer ${this.token}`;
+        const res = await fetch(`${FAMILY_API_BASE}/api/audio/upload`, {method:"POST",headers,body:blob});
+        let data={}; try { data=await res.json(); } catch {}
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        return data;
+    },
     async sendGlobalAudio(audio,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({audio,replyTo})})).message; },
     async privateMessages(id) { return (await this.request(`/api/messages/private/${id}`)).messages; },
     async sendPrivate(id,text,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({text,replyTo})})).message; },

@@ -20,7 +20,7 @@ const App = {
 
     async start() {
         this.applyAppearance();
-        await this.initPWA();
+        this.initPWA();
         if (await Auth.autoLogin()) {
             this.connectRealtime();
             await this.showHome();
@@ -29,13 +29,9 @@ const App = {
     },
 
     async initPWA() {
-        if (!("serviceWorker" in navigator)) return null;
-        try {
-            this.notificationRegistration = await navigator.serviceWorker.register("sw.js", {scope:"./"});
-            await navigator.serviceWorker.ready;
-            this.notificationRegistration = await navigator.serviceWorker.getRegistration("./") || this.notificationRegistration;
-            return this.notificationRegistration;
-        } catch(e) { console.warn("Service worker:", e); return null; }
+        if (!("serviceWorker" in navigator)) return;
+        try { this.notificationRegistration = await navigator.serviceWorker.register("sw.js", {scope:"./"}); }
+        catch(e) { console.warn("Service worker:", e); }
     },
 
     connectRealtime() {
@@ -61,10 +57,11 @@ const App = {
 
     async messageArrived(message, global) {
         this.cosmicSound("message");
-        if(message?.type==="audio"&&message.audio?.data&&message.audio?.id){
+        if(message?.type==="audio"&&message.audio?.id&&(message.audio.url||message.audio.data)){
             try{
-                const blob=await (await fetch(message.audio.data)).blob();
-                await MediaVault.put(message.audio.id,blob,message.audio.mime,message.audio.duration);
+                const source=message.audio.url||message.audio.data;
+                const blob=await (await fetch(source)).blob();
+                await MediaVault.put(message.audio.id,blob,message.audio.mime||blob.type,message.audio.duration);
                 const key=global?"global":this.getPrivateChatId(Auth.currentUser.id,message.authorId);
                 await API.audioAck(global?"global":"private",key,message.id,message.audio.id);
             }catch(e){console.warn("Audio delivery:",e);}
@@ -321,8 +318,8 @@ const App = {
         const authorUser=this.usersCache.find(u=>Number(u.id)===Number(m.authorId))||m;
         const avatar=!mine?this.avatarHtml(authorUser,34):"";
         const hasAudio=m.type==="audio"&&m.audio;
-        const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
-        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
+        const audioSrc=hasAudio&&(m.audio.url||m.audio.data)?this.attr(m.audio.url||m.audio.data):"";
+        const media=hasAudio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.url||m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
         const reply=m.replyTo?`<div class="reply-quote">↩️ ${this.esc(m.replyTo.author||"")}<br><span>${this.esc(m.replyTo.text||"Голосовое сообщение")}</span></div>`:"";
         const favorite=this.isFavorite(scope,key,m.id);
         const menu=`<button class="message-menu-btn" onclick="event.stopPropagation();App.messageMenu(event,'${scope}','${key}',${m.id},${mine})">⋯</button>`;
@@ -346,7 +343,8 @@ const App = {
     async toggleRecording(scope,id){
         if(this.audioSending){return;}
         if(this.mediaRecorder && this.mediaRecorder.state==="recording"){
-            try{this.mediaRecorder.stop();}catch(e){console.warn("MediaRecorder stop:",e);}
+            try{if(typeof this.mediaRecorder.requestData==="function")this.mediaRecorder.requestData();}catch{}
+            this.mediaRecorder.stop();
             return;
         }
         if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){alert("Голосовые сообщения не поддерживаются этим браузером");return;}
@@ -365,14 +363,14 @@ const App = {
                 stream?.getTracks().forEach(t=>t.stop());
                 const chunks=this.recordingChunks.slice();this.recordingChunks=[];
                 const duration=(Date.now()-this.recordingStarted)/1000;
-                if(duration<0.7||!chunks.length){this.audioSending=false;return;}
+                if(duration<0.7||!chunks.length)return;
                 const type=recorder.mimeType||mime||"audio/mp4";
                 const blob=new Blob(chunks,{type});
                 if(!blob.size){alert("Запись получилась пустой. Попробуйте ещё раз.");return;}
                 this.audioSending=true;this.setRecordingUI("sending");
                 try{
-                    const data=await this.blobToDataURL(blob);
-                    const audio={mime:blob.type||type,data,duration:Math.round(duration*10)/10};
+                    const uploaded=await API.uploadAudio(blob);
+                    const audio={id:uploaded.id,url:uploaded.url,mime:uploaded.mime||blob.type||type,size:blob.size,duration:Math.round(duration*10)/10};
                     const sent=scope==="global"?await API.sendGlobalAudio(audio,this.replyTarget):await API.sendPrivateAudio(id,audio,this.replyTarget);
                     if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type||type,duration);
                     this.replyTarget=null;this.audioSending=false;this.hideKeyboard();this.cosmicSound("send");
