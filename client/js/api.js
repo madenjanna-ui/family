@@ -46,12 +46,10 @@ const API = {
     },
     async editMessage(scope,key,messageId,text) { return (await this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}`,{method:"PUT",body:JSON.stringify({text})})).message; },
     async deleteMessage(scope,key,messageId) { return this.request(`/api/messages/${scope}/${encodeURIComponent(key)}/${messageId}`,{method:"DELETE"}); },
-    async pushPublicKey() { return (await this.request("/api/push/public-key")).publicKey; },
-    async pushSubscribe(subscription) { return this.request("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
+    async pushPublicKey() { return (await this.request("/api/notifications/public-key")).publicKey; },
+    async pushSubscribe(subscription) { return this.request("/api/notifications/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
     async notificationStatus() { return this.request("/api/notifications/status"); },
-    async notificationDiagnostics() { return this.request("/api/notifications/diagnostics"); },
-    async testNotification() { return this.request("/api/notifications/test",{method:"POST"}); },
-    async pushUnsubscribe(endpoint) { return this.request("/api/notifications/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
+    async pushUnsubscribe(endpoint) { return this.request("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
 
     connectWS(onMessage) {
         const base = FAMILY_API_BASE || location.origin;
