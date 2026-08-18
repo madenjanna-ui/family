@@ -1,4 +1,4 @@
-const CACHE = "family-shell-v6-3-push";
+const CACHE = "family-shell-v6-2-1";
 const SHELL = [
   "./",
   "./index.html",
@@ -40,8 +40,7 @@ self.addEventListener("push", event => {
     badge: "./assets/icon-180.png",
     tag: data.tag || "family-message",
     renotify: true,
-    requireInteraction: Boolean(data.requireInteraction),
-    data: { url: data.url || "./", tag: data.tag || "family-message" }
+    data: { url: data.url || "./" }
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
