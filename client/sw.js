@@ -1,4 +1,4 @@
-const CACHE = "family-shell-v6-2-1";
+const CACHE = "family-shell-v6-2-2";
 const SHELL = [
   "./",
   "./index.html",
@@ -40,7 +40,7 @@ self.addEventListener("push", event => {
     badge: "./assets/icon-180.png",
     tag: data.tag || "family-message",
     renotify: true,
-    data: { url: data.url || "./" }
+    data: { url: data.url || "./", chatId: data.chatId || null, scope: data.scope || null }
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
@@ -50,7 +50,11 @@ self.addEventListener("notificationclick", event => {
   const target = new URL(event.notification.data?.url || "./", self.location.href).href;
   event.waitUntil(clients.matchAll({type:"window", includeUncontrolled:true}).then(list => {
     for (const client of list) {
-      if ("focus" in client) { client.focus(); return; }
+      if ("focus" in client) {
+        client.focus();
+        if ("navigate" in client && client.url !== target) return client.navigate(target);
+        return;
+      }
     }
     return clients.openWindow(target);
   }));
