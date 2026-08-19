@@ -50,6 +50,11 @@ const API = {
     async pushSubscribe(subscription) { return this.request("/api/notifications/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
     async notificationStatus() { return this.request("/api/notifications/status"); },
     async notificationTest() { return this.request("/api/notifications/test",{method:"POST",body:"{}"}); },
+    async testNotification() { return this.notificationTest(); },
+    async notificationDiagnostics() {
+        const status = await this.notificationStatus();
+        return { vapidConfigured: true, enabled: !!status.enabled };
+    },
     async pushUnsubscribe(endpoint) { return this.request("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
 
     connectWS(onMessage) {
