@@ -144,24 +144,43 @@ function ensurePushConfig() {
 const pushConfig = ensurePushConfig();
 
 async function sendPushToUsers(userIds, payload) {
-   if (!pushConfig?.publicKey || !pushConfig?.privateKey) return;
     const unique = [...new Set(userIds.map(Number))];
+    if (!pushConfig?.publicKey || !pushConfig?.privateKey) {
+        console.warn("Push disabled: VAPID configuration is unavailable");
+        return {sent: 0, failed: 0, skipped: unique.length};
+    }
+
+    let sent = 0;
+    let failed = 0;
+    let skipped = 0;
+
     await Promise.all(unique.map(async id => {
         const user = db.users.find(u => Number(u.id) === id);
         const sub = user?.notification;
-        if (!sub?.endpoint) return;
+        if (!sub?.endpoint) {
+            skipped++;
+            return;
+        }
         try {
-            await webpush.sendNotification(sub, JSON.stringify(payload));
+            await webpush.sendNotification(
+                sub,
+                JSON.stringify(payload),
+                {TTL: 60, urgency: "high"}
+            );
+            sent++;
+            console.log(`Push sent: user=${id}`);
         } catch (e) {
+            failed++;
             const code = e.statusCode || e.status;
+            console.warn(`Push error: user=${id} status=${code || "?"} ${e.message}`);
             if (code === 404 || code === 410) {
                 user.notification = null;
                 saveDatabase(db);
-            } else {
-                console.warn("Push error:", e.message);
             }
         }
     }));
+
+    return {sent, failed, skipped};
 }
 
 function messageUserFields(user) {
@@ -2095,8 +2114,9 @@ const server =
                     if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
                     if (!user.notification?.endpoint) { sendJson(res,400,{success:false,error:"На этом аккаунте нет push-подписки"}); return; }
                     try {
-                        await sendPushToUsers([user.id], {title:"🔔 Family", body:"Тестовое уведомление работает", url:"./", tag:"family-test"});
-                        sendJson(res,200,{success:true,message:"Push отправлен"});
+                        const result = await sendPushToUsers([user.id], {title:"🔔 Family", body:"Тестовое уведомление работает", url:"./", tag:"family-test"});
+                        if (!result.sent) { sendJson(res,502,{success:false,error:"Push не доставлен",result}); return; }
+                        sendJson(res,200,{success:true,message:"Push отправлен",result});
                     } catch (e) {
                         sendJson(res,500,{success:false,error:e.message || "Не удалось отправить push"});
                     }
