@@ -172,7 +172,13 @@ async function sendPushToUsers(userIds, payload) {
         } catch (e) {
             failed++;
             const code = e.statusCode || e.status;
-            console.warn(`Push error: user=${id} status=${code || "?"} ${e.message}`);
+          console.warn("PUSH ERROR", {
+    user: id,
+    status: code,
+    message: e.message,
+    body: e.body || null,
+    headers: e.headers || null
+});
             if (code === 404 || code === 410) {
                 user.notification = null;
                 saveDatabase(db);
