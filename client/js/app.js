@@ -215,14 +215,20 @@ const App = {
             if(!this.notificationRegistration) throw new Error("Service Worker не запустился.");
             const key=await API.pushPublicKey();
             if(!key) throw new Error("Сервер не вернул ключ push. Обновите server.js на Family v6.2.");
-            let subscription=await this.notificationRegistration.pushManager.getSubscription();
-            if(!subscription){
-                subscription=await this.notificationRegistration.pushManager.subscribe({
-                    userVisibleOnly:true,
-                    applicationServerKey:this.urlBase64ToUint8Array(key)
-                });
-            }
-            await API.pushSubscribe(subscription.toJSON());
+          let subscription =
+    await this.notificationRegistration.pushManager.getSubscription();
+
+if (subscription) {
+    await subscription.unsubscribe();
+}
+
+subscription =
+    await this.notificationRegistration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: this.urlBase64ToUint8Array(key)
+    });
+
+await API.pushSubscribe(subscription.toJSON());
             await this.updatePushStatus();
             this.toast("🔔 Уведомления","Family теперь сможет сообщать о новых сообщениях");
         }catch(e){
