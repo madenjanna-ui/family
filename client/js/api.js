@@ -49,6 +49,7 @@ const API = {
     async pushPublicKey() { return (await this.request("/api/notifications/public-key")).publicKey; },
     async pushSubscribe(subscription) { return this.request("/api/notifications/subscribe",{method:"POST",body:JSON.stringify({subscription})}); },
     async notificationStatus() { return this.request("/api/notifications/status"); },
+    async notificationTest() { return this.request("/api/notifications/test",{method:"POST",body:"{}"}); },
     async pushUnsubscribe(endpoint) { return this.request("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})}); },
 
     connectWS(onMessage) {
