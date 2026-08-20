@@ -98,6 +98,13 @@ function saveDatabase(db) {
         { recursive: true }
     );
 
+    if (fs.existsSync(DATA_FILE)) {
+        fs.copyFileSync(
+            DATA_FILE,
+            DATA_FILE + ".backup"
+        );
+    }
+
     const tmp =
         DATA_FILE + ".tmp";
 
