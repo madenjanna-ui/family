@@ -41,11 +41,23 @@ const App = {
                 if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) this.messageArrived(msg.message, true);
                 if (document.getElementById("messages")) this.refreshOpenChat(true);
             }
-            if (msg.type === "private_message") {
-                if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) this.messageArrived(msg.message, false);
-                const otherId = Number(document.body.dataset.privateUser || 0);
-                if (otherId && this.getPrivateChatId(Auth.currentUser.id,otherId) === msg.chatId) this.refreshOpenChat(false, otherId);
-            }
+      if (msg.type === "private_message") {
+
+    if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) {
+        this.messageArrived(msg.message, false);
+    }
+
+    const otherId = Number(document.body.dataset.privateUser || 0);
+
+    if (
+        otherId &&
+        this.getPrivateChatId(Auth.currentUser.id, otherId) === msg.chatId
+    ) {
+
+        this.appendMessage(msg.message, false, otherId);
+
+    }
+}
             if (msg.type === "reaction" || msg.type === "message_updated" || msg.type === "message_deleted") {
                 const otherId=Number(document.body.dataset.privateUser||0);
                 if (msg.scope === "private" || msg.chatId) {
@@ -430,6 +442,46 @@ await API.pushSubscribe(subscription.toJSON());
         return messages;
     },
     getPrivateChatId(a,b){return [Number(a),Number(b)].sort((x,y)=>x-y).join("_");},
+  appendMessage(message, global=false, otherId=null){
+
+    const box = document.getElementById(
+        global ? "messages" : "privateMessages"
+    );
+
+    if(!box) return;
+
+    const input =
+        document.activeElement;
+
+    const typing =
+        input &&
+        input.tagName === "INPUT" &&
+        input.value.length > 0;
+
+
+    const nearBottom =
+        box.scrollHeight -
+        box.scrollTop -
+        box.clientHeight < 120;
+
+
+    box.insertAdjacentHTML(
+        "beforeend",
+        this.messageHtml(
+            message,
+            global,
+            otherId
+        )
+    );
+
+
+    // только если пользователь уже был внизу
+    if(nearBottom && !typing){
+        this.scrollMessages(
+            global ? "messages" : "privateMessages"
+        );
+    }
+}
     esc(v){return String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;");},
     attr(v){return this.esc(v);}
 };
