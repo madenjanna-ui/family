@@ -17,46 +17,7 @@ const App = {
     usersCache: [],
     replyTarget: null,
     favorites: JSON.parse(localStorage.getItem("FamilyFavorites") || "[]"),
- appendMessage(message, global=false, otherId=null){
 
-    const box = document.getElementById(
-        global ? "messages" : "privateMessages"
-    );
-
-    if(!box) return;
-
-    const input =
-        document.activeElement;
-
-    const typing =
-        input &&
-        input.tagName === "INPUT" &&
-        input.value.length > 0;
-
-
-    const nearBottom =
-        box.scrollHeight -
-        box.scrollTop -
-        box.clientHeight < 120;
-
-
-    box.insertAdjacentHTML(
-        "beforeend",
-        this.messageHtml(
-            message,
-            global,
-            otherId
-        )
-    );
-
-
-    // только если пользователь уже был внизу
-    if(nearBottom && !typing){
-        this.scrollMessages(
-            global ? "messages" : "privateMessages"
-        );
-    }
-}
 
     async start() {
         this.applyAppearance();
