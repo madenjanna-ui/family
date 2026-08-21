@@ -204,7 +204,7 @@ function audioId() {
     return crypto.randomBytes(12).toString("hex");
 }
 
-function buildMessage(user, text, audio) {
+function buildMessage(user, text, audio, media) {
     const message = {
         id: 0, authorId: user.id, author: user.name,
         ...messageUserFields(user),
@@ -216,6 +216,15 @@ function buildMessage(user, text, audio) {
         if (data.length > 3 * 1024 * 1024) throw new Error("Голосовое сообщение слишком большое");
         message.type = "audio";
         message.audio = { id: audio.id || audioId(), mime: String(audio.mime || "audio/mp4"), duration: Math.min(600, Math.max(0, Number(audio.duration) || 0)), data, pending: [] };
+    } else if (media) {
+        const data=String(media.data||"");
+        const mime=String(media.mime||"");
+        if(!/^data:(image|video)\//.test(data)) throw new Error("Недопустимый формат медиа");
+        const type=mime.startsWith("video/")?"video":"image";
+        const limit=type==="video"?8*1024*1024:4*1024*1024;
+        if(data.length>limit) throw new Error(type==="video"?"Видео слишком большое (максимум 6 МБ)":"Фото слишком большое (максимум 3 МБ)");
+        message.type=type==="video"?"video":"photo";
+        message.media={id:String(media.id||audioId()),mime,data,name:String(media.name||""),size:Number(media.size)||0,pending:[]};
     } else {
         message.type = "text";
         message.text = String(text || "").trim();
@@ -308,7 +317,7 @@ function readBody(req) {
 
                     if (
                         data.length >
-                        5 * 1024 * 1024
+                        12 * 1024 * 1024
                     ) {
 
                         req.destroy();
@@ -1622,17 +1631,18 @@ const server =
                     const user = authUser(req);
                     if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
                     const hasAudio = !!body.audio;
+                    const hasMedia = !!body.media;
                     const text = String(body.text || "").trim();
-                    if (!hasAudio && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
+                    if (!hasAudio && !hasMedia && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
                     let message;
-                    try { message = buildMessage(user, text, hasAudio ? body.audio : null); }
+                    try { message = buildMessage(user, text, hasAudio ? body.audio : null, hasMedia ? body.media : null); }
                     catch (e) { sendJson(res,400,{success:false,error:e.message}); return; }
                     message.id = nextId(db.globalChat);
                     if (body.replyTo?.id) message.replyTo = {id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
-                    if (message.type === "audio") message.audio.pending = db.users.filter(u => Number(u.id)!==Number(user.id)).map(u=>Number(u.id));
+                    if (message.type === "audio" || message.type === "photo" || message.type === "video") message[message.type === "audio" ? "audio" : "media"].pending = db.users.filter(u => Number(u.id)!==Number(user.id)).map(u=>Number(u.id));
                     db.globalChat.push(message); saveDatabase(db);
                     broadcast({type:"global_message",message});
-                    void sendPushToUsers(db.users.filter(u=>Number(u.id)!==Number(user.id)).map(u=>u.id), {title:`🌌 ${user.name}`, body:message.type==="audio"?"🎙️ Голосовое сообщение":message.text, url:"./", tag:"family-global"});
+                    void sendPushToUsers(db.users.filter(u=>Number(u.id)!==Number(user.id)).map(u=>u.id), {title:`🌌 ${user.name}`, body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text, url:"./", tag:"family-global"});
                     sendJson(res,201,{success:true,message});
                     return;
                 }
@@ -1730,14 +1740,14 @@ const server =
                         const text = String(body.text || "").trim();
                         if (!hasAudio && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
                         let message;
-                        try { message = buildMessage(user,text,hasAudio ? body.audio : null); }
+                        try { message = buildMessage(user,text,hasAudio ? body.audio : null, hasMedia ? body.media : null); }
                         catch (e) { sendJson(res,400,{success:false,error:e.message}); return; }
                         message.id = nextId(db.privateChats[id]);
                         if (body.replyTo?.id) message.replyTo = {id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
-                        if (message.type === "audio") message.audio.pending = [other.id];
+                        if (message.type === "audio" || message.type === "photo" || message.type === "video") message[message.type === "audio" ? "audio" : "media"].pending = [other.id];
                         db.privateChats[id].push(message); saveDatabase(db);
                         broadcast({type:"private_message",chatId:id,message});
-                        void sendPushToUsers([other.id], {title:`💌 ${user.name}`,body:message.type==="audio"?"🎙️ Голосовое сообщение":message.text,url:"./",tag:`family-private-${id}`});
+                        void sendPushToUsers([other.id], {title:`💌 ${user.name}`,body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text,url:"./",tag:`family-private-${id}`});
                         sendJson(res,201,{success:true,message}); return;
                     }
                 }
@@ -1771,10 +1781,9 @@ const server =
                     const user=authUser(req); if(!user){sendJson(res,401,{success:false});return;}
                     const scope=String(body.scope||""), key=String(body.key||""), messageId=Number(body.messageId);
                     const chat=scope==="global"?db.globalChat:db.privateChats[key]||[]; const message=findMessage(chat,messageId);
-                    if(message?.type==="audio"&&message.audio){
-                        message.audio.pending=(message.audio.pending||[]).filter(id=>Number(id)!==Number(user.id));
-                        if(message.audio.pending.length===0) delete message.audio.data;
-                        saveDatabase(db);
+                    if(message && ["audio","photo","video"].includes(message.type)){
+                        const store=message.type==="audio"?message.audio:message.media;
+                        if(store){store.pending=(store.pending||[]).filter(id=>Number(id)!==Number(user.id));if(store.pending.length===0)delete store.data;saveDatabase(db);}
                     }
                     sendJson(res,200,{success:true}); return;
                 }
@@ -2180,6 +2189,13 @@ const wss =
         path: "/ws"
     });
 
+const liveSockets = new Map();
+function sendToUserSockets(userId,payload){
+    const set=liveSockets.get(Number(userId)); if(!set)return;
+    const data=JSON.stringify(payload);
+    for(const socket of set){if(socket.readyState===WebSocket.OPEN)socket.send(data);}
+}
+
 wss.on(
     "connection",
     (socket, req) => {
@@ -2221,6 +2237,17 @@ wss.on(
 
         socket._familyUserId =
             userId;
+        if(userId){
+            const set=liveSockets.get(Number(userId))||new Set();set.add(socket);liveSockets.set(Number(userId),set);
+        }
+        socket.on("message",raw=>{
+            try{
+                const msg=JSON.parse(String(raw||""));
+                if(!userId||!["call_offer","call_answer","call_ice","call_end"].includes(msg.type))return;
+                const to=Number(msg.to);if(!to)return;
+                sendToUserSockets(to,{...msg,from:Number(userId),fromName:db.users.find(u=>Number(u.id)===Number(userId))?.name||"Семья"});
+            }catch{}
+        });
 
         socket.send(
             JSON.stringify({
@@ -2239,11 +2266,8 @@ wss.on(
             () => {
 
                 if (userId) {
-
-                    setPresence(
-                        userId,
-                        false
-                    );
+                    const set=liveSockets.get(Number(userId));if(set){set.delete(socket);if(!set.size)liveSockets.delete(Number(userId));}
+                    setPresence(userId,false);
                 }
             }
         );
