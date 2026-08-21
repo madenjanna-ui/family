@@ -871,7 +871,33 @@ body::before {
     padding-bottom: 42px !important;
   }
 }
+/* ===== Исправление ширины чатов на мобильных ===== */
 
+.home-dialog {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.home-dialog-main {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+}
+
+.home-dialog-preview {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.content {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+}
 
 /* v21.4 — fast chat opening */
 .chat-loading{display:flex;align-items:center;justify-content:center;min-height:180px;}
