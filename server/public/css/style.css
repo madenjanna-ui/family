@@ -871,3 +871,9 @@ body::before {
     padding-bottom: 42px !important;
   }
 }
+
+
+/* v21.4 — fast chat opening */
+.chat-loading{display:flex;align-items:center;justify-content:center;min-height:180px;}
+.chat-loading-indicator{padding:12px 18px;border-radius:18px;background:rgba(255,255,255,.08);backdrop-filter:blur(10px);font-size:14px;opacity:.82;}
+.chat-loading-error{margin:auto;padding:16px;text-align:center;opacity:.75;}
