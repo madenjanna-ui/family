@@ -110,5 +110,5 @@ const API = {
 
     return ws;
 
-    }
+}
 };
