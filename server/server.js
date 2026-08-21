@@ -2191,10 +2191,35 @@ const wss =
     });
 
 const liveSockets = new Map();
-function sendToUserSockets(userId,payload){
-    const set=liveSockets.get(Number(userId)); if(!set)return;
-    const data=JSON.stringify(payload);
-    for(const socket of set){if(socket.readyState===WebSocket.OPEN)socket.send(data);}
+function sendToUserSockets(userId, payload) {
+    const id = Number(userId);
+    const set = liveSockets.get(id);
+
+    console.log(
+        "📞 CALL DELIVERY:",
+        "to =", id,
+        "type =", payload?.type,
+        "sockets =", set ? set.size : 0,
+        "onlineUsers =", [...liveSockets.keys()]
+    );
+
+    if (!set || !set.size) {
+        console.warn("📞 NO SOCKETS FOR USER:", id);
+        return false;
+    }
+
+    const data = JSON.stringify(payload);
+    let sent = 0;
+
+    for (const socket of set) {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(data);
+            sent++;
+        }
+    }
+
+    console.log("📞 CALL DELIVERED TO SOCKETS:", sent);
+    return sent > 0;
 }
 
 wss.on(
