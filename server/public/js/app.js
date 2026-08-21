@@ -34,7 +34,11 @@ const App = {
 
     async start() {
         this.applyAppearance();
-        await this.initPWA();
+
+        // Do not block the application UI on Service Worker startup.
+        // iOS standalone/PWA can keep navigator.serviceWorker.ready pending.
+        this.initPWA().catch(() => {});
+
         if (await Auth.autoLogin()) {
             this.connectRealtime();
             await this.showHome();
