@@ -436,11 +436,25 @@ await API.pushSubscribe(subscription.toJSON());
     async openAdmin() {
         this.leaveActiveChat();
         ++this.chatNavSeq;
-        if(!Auth.isAdmin())return;const users=await Auth.getUsers();
+        if(!Auth.isAdmin())return;
+        const users=await Auth.getUsers();
+        let settings={maxUsers:10};
+        try{settings=await API.settings();}catch{}
+        const count=users.length, max=Math.max(count,Number(settings.maxUsers||10));
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👑 Пользователи</h1></div><div class="content">
+        <div class="card settings-card"><div><b>👨‍👩‍👧‍👦 Лимит пользователей</b><small>Сейчас ${count} из ${max}</small></div><div class="admin-limit-row"><input id="maxUsers" type="number" min="${count}" max="100" value="${max}"><button class="secondary" onclick="App.saveMaxUsers()">Сохранить</button></div></div>
         ${users.map(u=>`<div class="card user-row"><div class="user-person">${this.avatarHtml(u,48)}<div><div class="user-name">${this.esc(u.name)}</div><small>@${this.esc(u.login)} · ${u.role==="admin"?"Администратор":"Пользователь"}</small></div></div><div class="actions"><button onclick="App.editUser(${u.id})">✏️</button>${u.id!==Auth.currentUser.id?`<button onclick="App.removeUser(${u.id})">🗑️</button>`:""}</div></div>`).join("")}
-        ${users.length<4?`<div class="card" onclick="App.showCreateUser()">➕ Добавить пользователя</div>`:"<div class='hint'>В Family максимум 4 человека.</div>"}</div></div>`;
+        ${users.length<max?`<div class="card" onclick="App.showCreateUser()">➕ Добавить пользователя</div>`:"<div class='hint'>Достигнут лимит ${max} пользователей. Уже созданные аккаунты не удаляются при уменьшении лимита.</div>"}</div></div>`;
     },
+
+    async saveMaxUsers(){
+        const el=document.getElementById("maxUsers");
+        if(!el)return;
+        const maxUsers=Math.max(Auth.currentUser?1:1,Math.min(100,Math.floor(Number(el.value)||10)));
+        try{await API.updateSettings({maxUsers});this.toast("👨‍👩‍👧‍👦 Лимит",`Теперь максимум ${maxUsers} пользователей`);await this.openAdmin();}
+        catch(e){alert(e.message);}
+    },
+
     showCreateUser(){app.innerHTML=`<div class="page"><div class="header"><button onclick="App.openAdmin()">←</button><h1>➕ Пользователь</h1></div><div class="content"><div class="card form"><input id="newName" placeholder="Имя"><input id="newLogin" placeholder="Логин"><input id="newPassword" type="password" placeholder="Пароль"><div class="gender"><label><input type="radio" name="gender" value="male" checked> 👨 Мужчина</label><label><input type="radio" name="gender" value="female"> 👩 Женщина</label></div><button class="primary" onclick="App.createUser()">Создать</button></div></div></div>`;},
     async createUser(){const name=document.getElementById("newName").value.trim(),login=document.getElementById("newLogin").value.trim(),password=document.getElementById("newPassword").value.trim(),gender=document.querySelector('input[name="gender"]:checked').value;const r=await Auth.createUser(name,login,password,gender);if(!r.success){alert(r.error);return;}await this.openAdmin();},
     async editUser(id){const u=await Auth.getUserById(id);if(!u)return;app.innerHTML=`<div class="page"><div class="header"><button onclick="App.openAdmin()">←</button><h1>✏️ Пользователь</h1></div><div class="content"><div class="card form"><div class="edit-avatar">${this.avatarHtml(u,78)}</div><input id="editName" value="${this.attr(u.name)}" placeholder="Имя"><input id="editLogin" value="${this.attr(u.login)}" placeholder="Логин"><input id="editPassword" type="password" placeholder="Новый пароль"><div class="gender"><label><input type="radio" name="eg" value="male" ${u.gender!=="female"?"checked":""}> 👨 Мужчина</label><label><input type="radio" name="eg" value="female" ${u.gender==="female"?"checked":""}> 👩 Женщина</label></div><button class="primary" onclick="App.saveUser(${id})">Сохранить</button></div></div></div>`;},
@@ -452,14 +466,20 @@ await API.pushSubscribe(subscription.toJSON());
         ++this.chatNavSeq;
         const users=await Auth.getUsers(),me=Auth.currentUser;
         const actionLabel={message:"Отправить сообщение",photo:"Выбрать фото",video:"Выбрать видео",voice:"Записать голос",audioCall:"Голосовой звонок",videoCall:"Видеозвонок"}[targetAction]||"Открыть диалог";
-        const familyRow=(targetAction && ["message","photo","video","voice"].includes(targetAction))?`<div class="dialog-card quick-recipient" onclick="App.quickRecipient('global','${targetAction}')"><div class="family-orbit">🌌</div><div class="dialog-main"><div class="dialog-name">Семья</div><div class="dialog-preview">${actionLabel} · общий чат</div></div></div>`:"";
+        const familyRow=(Auth.currentUser?.familyChatMember && targetAction && ["message","photo","video","voice"].includes(targetAction))?`<div class="dialog-card quick-recipient" onclick="App.quickRecipient('global','${targetAction}')"><div class="family-orbit">🌌</div><div class="dialog-main"><div class="dialog-name">Семья</div><div class="dialog-preview">${actionLabel} · общий чат</div></div></div>`:"";
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>${targetAction?"Кому?":"👤 Личные"}</h1></div><div class="content dialog-list">${familyRow}${users.filter(u=>u.id!==me.id).map(u=>`<div class="dialog-card quick-recipient" onclick="${targetAction?`App.quickRecipient(${u.id},'${targetAction}')`:`App.openPrivateChat(${u.id})`}">${this.avatarHtml(u,48)}<div class="dialog-main"><div class="dialog-name">${this.esc(u.name)}</div><div class="dialog-preview">${targetAction?actionLabel:`@${this.esc(u.login)} ${u.presence?.online?"· 🟢 онлайн":""}`}</div></div></div>`).join("")}</div>${this.bottomNav("chats")}</div>`;
     },
 
-    async refreshOpenChat(global,otherId){
-        if(global && !document.getElementById("messages"))return;
-        if(!global && !document.getElementById("privateMessages"))return;
-        try { if(global) await this.openGlobalChat(true); else await this.openPrivateChat(otherId,true); } catch(e){console.warn("Chat refresh:",e);}
+    async refreshOpenChat(global,otherId,scopeOverride=null){
+        const scope=scopeOverride || (global?"global":this.activeChatScope||"private");
+        if(scope==="global" && !document.getElementById("messages"))return;
+        if(scope==="private" && !document.getElementById("privateMessages"))return;
+        if(scope==="group" && !document.getElementById("groupMessages"))return;
+        try {
+            if(scope==="global") await this.openGlobalChat(true);
+            else if(scope==="group") await this.openGroupChat(Number(otherId),true);
+            else await this.openPrivateChat(otherId,true);
+        } catch(e){console.warn("Chat refresh:",e);}
     },
 
     async openPrivateChat(otherId,silent=false){
@@ -503,7 +523,7 @@ await API.pushSubscribe(subscription.toJSON());
         if(!name||!ids.length){alert("Введите название и выберите участников");return;}
         try{const g=await API.createGroup({name,memberIds:ids});document.querySelectorAll(".quick-sheet-backdrop").forEach(x=>x.remove());this.toast("👥 Группа создана",g.name);await this.openGroupChat(g.id);}catch(e){alert(e.message);}
     },
-    async openGroupChat(groupId){
+    async openGroupChat(groupId,silent=false){
         const navSeq=++this.chatNavSeq; this.leaveActiveChat(); let groups=[];let messages=[];try{[groups,messages]=await Promise.all([API.groups(),API.groupMessages(groupId)]);}catch(e){alert(e.message);return;}
         const group=groups.find(g=>Number(g.id)===Number(groupId));if(!group)return;this.usersCache=group.members||[];messages=await this.cacheFetchedAudio(messages,false,groupId,"group");this._lastMessages=messages||[];if(navSeq!==this.chatNavSeq)return;this.setActiveChat("group",String(groupId));
         app.innerHTML=`<div class="page chat-page"><div class="header chat-header"><button onclick="App.showHome()">←</button><div class="group-orbit small">👥</div><h1>${this.esc(group.name)}</h1></div><div class="messages" id="groupMessages">${messages.map(m=>this.messageHtml(m,false,groupId)).join("")}</div>${this.chatFooter("group",groupId,"Напишите в группу...")}${this.bottomNav("chat","chat")}</div>`;
@@ -602,7 +622,7 @@ await API.pushSubscribe(subscription.toJSON());
     async deleteMessage(scope,key,id){if(!confirm("Удалить это сообщение?"))return;try{await API.deleteMessage(scope,key,id);}catch(e){alert(e.message);}},
     showEmojiPicker(btn,inputId){document.querySelectorAll(".emoji-picker").forEach(x=>x.remove());const box=document.createElement("div");box.className="emoji-picker";box.innerHTML=["😀","😂","😍","🥰","😘","😢","😮","😡","👍","👎","❤️","💕","🔥","🎉","🙏","😊","😉","🤗","🤣","🥹","😎","💋","🌹","☀️","🌌"].map(e=>`<button onclick="App.insertEmoji('${inputId}','${e}')">${e}</button>`).join("");btn.parentElement.parentElement.appendChild(box);},
     insertEmoji(inputId,emoji){const input=document.getElementById(inputId);if(!input)return;const start=input.selectionStart||input.value.length,end=input.selectionEnd||input.value.length;input.value=input.value.slice(0,start)+emoji+input.value.slice(end);input.focus();input.selectionStart=input.selectionEnd=start+emoji.length;document.querySelectorAll(".emoji-picker").forEach(x=>x.remove());},
-    getCurrentScope(){return document.getElementById("messages")?"global":"private"},
+    getCurrentScope(){return document.getElementById("messages")?"global":document.getElementById("groupMessages")?"group":"private"},
     formatDuration(s){s=Math.round(Number(s)||0);return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;},
     showReactions(btn,scope,key,id){document.querySelectorAll(".reaction-picker").forEach(x=>x.remove());const box=document.createElement("div");box.className="reaction-picker";box.innerHTML=REACTIONS.map(e=>`<button onclick="App.react('${scope}','${key}',${id},'${e}');this.parentElement.remove()">${e}</button>`).join("");btn.parentElement.appendChild(box);},
     async react(scope,key,id,emoji){try{await API.react(scope,key,id,emoji);}catch(e){alert(e.message);}},

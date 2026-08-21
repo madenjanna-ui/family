@@ -18,6 +18,7 @@ function defaultDatabase() {
         privateChats: {},
         groups: [],
         groupChats: {},
+        familyChatMembers: [],
         sessions: {},
         reads: {},
         presence: {},
@@ -62,11 +63,17 @@ function loadDatabase() {
         db.privateChats ||= {};
         db.groups ||= [];
         db.groupChats ||= {};
+        const hadFamilyChatMembers = Array.isArray(db.familyChatMembers);
+        if (!hadFamilyChatMembers) db.familyChatMembers = db.users.map(u => Number(u.id));
         db.sessions ||= {};
         db.reads ||= {};
         db.presence ||= {};
         db.settings ||= {maxUsers: 10};
         db.settings.maxUsers = Math.max(1, Number(db.settings.maxUsers) || 10);
+
+        if (!hadFamilyChatMembers) {
+            saveDatabase(db);
+        }
 
         if (db.users.length === 0) {
             db.users.push(createDefaultAdmin());
@@ -265,14 +272,14 @@ function nextId(collection) {
 }
 
 function publicUser(user) {
-
     return {
         id: user.id,
         name: user.name,
         login: user.login,
         gender: user.gender,
         role: user.role,
-        avatar: user.avatar || ""
+        avatar: user.avatar || "",
+        familyChatMember: (db.familyChatMembers || []).map(Number).includes(Number(user.id))
     };
 }
 
@@ -1417,7 +1424,7 @@ const server =
                     const unread = {total:0, global:0, private:{}, groups:{}};
 
                     const globalLast = db.globalChat?.[db.globalChat.length-1];
-                    if (globalLast) {
+                    if (globalLast && (db.familyChatMembers||[]).map(Number).includes(Number(user.id))) {
                         const count = unreadGlobal(user.id);
                         chats.push({scope:"global", id:"global", name:"Семья", unread:count, lastMessage:globalLast});
                         unread.global=count; unread.total += count;
@@ -1478,7 +1485,44 @@ const server =
                     const id=Number(groupMatch[1]); const group=(db.groups||[]).find(g=>Number(g.id)===id);
                     if(!group){sendJson(res,404,{success:false,error:"Группа не найдена"});return;}
                     if(!(group.memberIds||[]).map(Number).includes(Number(user.id))){sendJson(res,403,{success:false,error:"Нет доступа к группе"});return;}
-                    if(req.method==="GET"){const messages=db.groupChats?.[String(id)]||[];sendJson(res,200,{success:true,messages});return;}
+
+                    if(req.method==="GET"){
+                        const messages=db.groupChats?.[String(id)]||[];
+                        sendJson(res,200,{success:true,messages});
+                        return;
+                    }
+
+                    if(req.method==="POST"){
+                        const hasAudio=!!body.audio;
+                        const hasMedia=!!body.media;
+                        const text=String(body.text||"").trim();
+                        if(!hasAudio && !hasMedia && !text){sendJson(res,400,{success:false,error:"Пустое сообщение"});return;}
+                        let message;
+                        try{ message=buildMessage(user,text,hasAudio?body.audio:null,hasMedia?body.media:null); }
+                        catch(e){sendJson(res,400,{success:false,error:e.message});return;}
+                        db.groupChats[String(id)] ||= [];
+                        const chat=db.groupChats[String(id)];
+                        message.id=nextId(chat);
+                        if(body.replyTo?.id) message.replyTo={id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
+                        if(message.type==="audio"||message.type==="photo"||message.type==="video"){
+                            message[message.type==="audio"?"audio":"media"].pending=(group.memberIds||[]).filter(mid=>Number(mid)!==Number(user.id)).map(Number);
+                        }
+                        chat.push(message);
+                        saveDatabase(db);
+                        broadcast({type:"group_message",groupId:id,message});
+
+                        const recipients=(group.memberIds||[]).filter(mid=>Number(mid)!==Number(user.id));
+                        const pushRecipients=recipients.filter(mid=>!isChatActive(Number(mid),"group",String(id)));
+                        if(pushRecipients.length){
+                            void sendPushToUsers(pushRecipients,{
+                                title:`👥 ${group.name}`,
+                                body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text,
+                                url:"./",tag:`family-group-${id}`,scope:"group",chatId:String(id)
+                            });
+                        }
+                        sendJson(res,201,{success:true,message});
+                        return;
+                    }
                 }
 
                 // ==========================================
@@ -1536,19 +1580,27 @@ const server =
                         }
                     }
 
+                    const groupCounts = {};
+                    let totalUnread = unreadGlobal(user.id) + Object.values(privateCounts).reduce((a,b)=>a+Number(b||0),0);
+                    for (const group of db.groups || []) {
+                        if (!(group.memberIds || []).map(Number).includes(Number(user.id))) continue;
+                        const gid = String(group.id);
+                        const read = Number(db.reads?.[String(user.id)]?.groups?.[gid] || 0);
+                        const chat = db.groupChats?.[gid] || [];
+                        const count = chat.filter(m => Number(m.id) > read && Number(m.authorId) !== Number(user.id)).length;
+                        groupCounts[gid] = count;
+                        totalUnread += count;
+                    }
+
                     sendJson(
                         res,
                         200,
                         {
                             success: true,
-
-                            global:
-                                unreadGlobal(
-                                    user.id
-                                ),
-
-                            private:
-                                privateCounts
+                            global: unreadGlobal(user.id),
+                            private: privateCounts,
+                            groups: groupCounts,
+                            total: totalUnread
                         }
                     );
 
@@ -1685,31 +1737,10 @@ const server =
                         "/api/messages/global"
                 ) {
 
-                    const user =
-                        authUser(req);
-
-                    if (!user) {
-
-                        sendJson(
-                            res,
-                            401,
-                            {
-                                success: false
-                            }
-                        );
-
-                        return;
-                    }
-
-                    sendJson(
-                        res,
-                        200,
-                        {
-                            success: true,
-                            messages:
-                                db.globalChat
-                        }
-                    );
+                    const user = authUser(req);
+                    if (!user) { sendJson(res,401,{success:false}); return; }
+                    if (!(db.familyChatMembers||[]).map(Number).includes(Number(user.id))) { sendJson(res,403,{success:false,error:"Вы не участник общего чата"}); return; }
+                    sendJson(res,200,{success:true,messages:db.globalChat});
 
                     return;
                 }
@@ -1721,6 +1752,7 @@ const server =
                 ) {
                     const user = authUser(req);
                     if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
+                    if (!(db.familyChatMembers||[]).map(Number).includes(Number(user.id))) { sendJson(res,403,{success:false,error:"Вы не участник общего чата"}); return; }
                     const hasAudio = !!body.audio;
                     const hasMedia = !!body.media;
                     const text = String(body.text || "").trim();
@@ -1730,10 +1762,14 @@ const server =
                     catch (e) { sendJson(res,400,{success:false,error:e.message}); return; }
                     message.id = nextId(db.globalChat);
                     if (body.replyTo?.id) message.replyTo = {id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
-                    if (message.type === "audio" || message.type === "photo" || message.type === "video") message[message.type === "audio" ? "audio" : "media"].pending = db.users.filter(u => Number(u.id)!==Number(user.id)).map(u=>Number(u.id));
+                    if (message.type === "audio" || message.type === "photo" || message.type === "video") message[message.type === "audio" ? "audio" : "media"].pending = (db.familyChatMembers||[]).filter(id => Number(id)!==Number(user.id)).map(Number);
                     db.globalChat.push(message); saveDatabase(db);
                     broadcast({type:"global_message",message});
-                    void sendPushToUsers(db.users.filter(u=>Number(u.id)!==Number(user.id)).map(u=>u.id), {title:`🌌 ${user.name}`, body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text, url:"./", tag:"family-global"});
+                    const recipients = db.users.filter(u=>Number(u.id)!==Number(user.id) && (db.familyChatMembers||[]).map(Number).includes(Number(u.id))).map(u=>Number(u.id));
+                    const pushRecipients = recipients.filter(id=>!isChatActive(id,"global","global"));
+                    if (pushRecipients.length) {
+                        void sendPushToUsers(pushRecipients, {title:`🌌 ${user.name}`, body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text, url:"./", tag:"family-global",scope:"global",chatId:"global"});
+                    }
                     sendJson(res,201,{success:true,message});
                     return;
                 }
@@ -1830,7 +1866,7 @@ const server =
                         const hasAudio = !!body.audio;
                         const hasMedia = !!body.media;
                         const text = String(body.text || "").trim();
-                        if (!hasAudio && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
+                        if (!hasAudio && !hasMedia && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
                         let message;
                         try { message = buildMessage(user,text,hasAudio ? body.audio : null, hasMedia ? body.media : null); }
                         catch (e) { sendJson(res,400,{success:false,error:e.message}); return; }
@@ -1839,7 +1875,9 @@ const server =
                         if (message.type === "audio" || message.type === "photo" || message.type === "video") message[message.type === "audio" ? "audio" : "media"].pending = [other.id];
                         db.privateChats[id].push(message); saveDatabase(db);
                         broadcast({type:"private_message",chatId:id,message});
-                        void sendPushToUsers([other.id], {title:`💌 ${user.name}`,body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text,url:"./",tag:`family-private-${id}`});
+                        if (!isChatActive(Number(other.id),"private",id)) {
+                        void sendPushToUsers([other.id], {title:`💌 ${user.name}`,body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text,url:"./",tag:`family-private-${id}`,scope:"private",chatId:id});
+                    }
                         sendJson(res,201,{success:true,message}); return;
                     }
                 }
@@ -1872,7 +1910,12 @@ const server =
                 if (req.method === "POST" && url.pathname === "/api/audio/ack") {
                     const user=authUser(req); if(!user){sendJson(res,401,{success:false});return;}
                     const scope=String(body.scope||""), key=String(body.key||""), messageId=Number(body.messageId);
-                    const chat=scope==="global"?db.globalChat:db.privateChats[key]||[]; const message=findMessage(chat,messageId);
+                    const chat = scope==="global"
+                        ? db.globalChat
+                        : scope==="group"
+                            ? (db.groupChats?.[key] || [])
+                            : (db.privateChats[key] || []);
+                    const message=findMessage(chat,messageId);
                     if(message && ["audio","photo","video"].includes(message.type)){
                         const store=message.type==="audio"?message.audio:message.media;
                         if(store){store.pending=(store.pending||[]).filter(id=>Number(id)!==Number(user.id));if(store.pending.length===0)delete store.data;saveDatabase(db);}
@@ -2238,6 +2281,22 @@ const server =
                 }
 
                 // ==========================================
+                // FAMILY SETTINGS
+                // ==========================================
+                if (url.pathname === "/api/settings" && req.method === "GET") {
+                    const user=authUser(req); if(!user){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+                    sendJson(res,200,{success:true,settings:{maxUsers:Number(db.settings?.maxUsers||10)}});
+                    return;
+                }
+                if (url.pathname === "/api/settings" && req.method === "PUT") {
+                    const admin=requireAdmin(req,res); if(!admin)return;
+                    const maxUsers=Math.max(db.users.length,Math.min(100,Math.floor(Number(body.maxUsers)||10)));
+                    db.settings.maxUsers=maxUsers; saveDatabase(db);
+                    sendJson(res,200,{success:true,settings:{maxUsers}});
+                    return;
+                }
+
+                // ==========================================
                 // UNKNOWN API
                 // ==========================================
 
@@ -2282,6 +2341,13 @@ const wss =
     });
 
 const liveSockets = new Map();
+const activeChats = new Map(); // userId -> {scope,key}
+const pendingCalls = new Map(); // targetUserId -> latest call signal
+
+function isChatActive(userId, scope, key){
+    const active=activeChats.get(Number(userId));
+    return !!active && active.scope===scope && String(active.key)===String(key);
+}
 function sendToUserSockets(userId, payload) {
     const id = Number(userId);
     const set = liveSockets.get(id);
@@ -2360,9 +2426,46 @@ wss.on(
         socket.on("message",raw=>{
             try{
                 const msg=JSON.parse(String(raw||""));
-                if(!userId||!["call_offer","call_answer","call_ice","call_end"].includes(msg.type))return;
+                if(!userId)return;
+
+                if(msg.type==="chat_open"){
+                    activeChats.set(Number(userId),{scope:String(msg.scope||""),key:String(msg.key||"")});
+                    return;
+                }
+                if(msg.type==="chat_close"){
+                    const current=activeChats.get(Number(userId));
+                    if(!current || (current.scope===String(msg.scope||"") && String(current.key)===String(msg.key||""))){
+                        activeChats.delete(Number(userId));
+                    }
+                    return;
+                }
+
+                if(!["call_offer","call_answer","call_ice","call_end"].includes(msg.type))return;
                 const to=Number(msg.to);if(!to)return;
-                sendToUserSockets(to,{...msg,from:Number(userId),fromName:db.users.find(u=>Number(u.id)===Number(userId))?.name||"Семья"});
+                const payload={...msg,from:Number(userId),fromName:db.users.find(u=>Number(u.id)===Number(userId))?.name||"Семья"};
+
+                if(msg.type==="call_offer"){
+                    pendingCalls.set(to,{payload,expires:Date.now()+60000});
+                    const delivered=sendToUserSockets(to,payload);
+                    if(!delivered){
+                        void sendPushToUsers([to],{title:`📞 ${payload.fromName}`,body:payload.video?"Входящий видеозвонок":"Входящий звонок",url:"./",tag:`family-call-${userId}`,scope:"call",call:true});
+                    }
+                    return;
+                }
+
+                if(msg.type==="call_answer"){
+                    pendingCalls.delete(to);
+                    sendToUserSockets(to,payload);
+                    return;
+                }
+
+                if(msg.type==="call_end"){
+                    pendingCalls.delete(to);
+                    sendToUserSockets(to,payload);
+                    return;
+                }
+
+                sendToUserSockets(to,payload);
             }catch{}
         });
 
@@ -2378,12 +2481,22 @@ wss.on(
             })
         );
 
+        const pending=pendingCalls.get(Number(userId));
+        if(pending){
+            if(pending.expires>Date.now()){
+                setTimeout(()=>sendToUserSockets(Number(userId),pending.payload),50);
+            }else{
+                pendingCalls.delete(Number(userId));
+            }
+        }
+
         socket.on(
             "close",
             () => {
 
                 if (userId) {
                     const set=liveSockets.get(Number(userId));if(set){set.delete(socket);if(!set.size)liveSockets.delete(Number(userId));}
+                    activeChats.delete(Number(userId));
                     setPresence(userId,false);
                 }
             }
