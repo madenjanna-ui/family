@@ -1737,6 +1737,7 @@ const server =
 
                     if (req.method === "POST") {
                         const hasAudio = !!body.audio;
+                        const hasMedia = !!body.media;
                         const text = String(body.text || "").trim();
                         if (!hasAudio && !text) { sendJson(res,400,{success:false,error:"Пустое сообщение"}); return; }
                         let message;
