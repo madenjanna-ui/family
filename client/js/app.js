@@ -34,7 +34,7 @@ const App = {
 
     async start() {
         this.applyAppearance();
-        this.initPWA();
+        await this.initPWA();
         if (await Auth.autoLogin()) {
             this.connectRealtime();
             await this.showHome();
@@ -43,9 +43,19 @@ const App = {
     },
 
     async initPWA() {
-        if (!("serviceWorker" in navigator)) return;
-        try { this.notificationRegistration = await navigator.serviceWorker.register("sw.js", {scope:"./"}); }
-        catch(e) { console.warn("Service worker:", e); }
+        if (!("serviceWorker" in navigator)) return null;
+        try {
+            const swUrl = new URL("sw.js", document.baseURI);
+            const scope = new URL("./", document.baseURI).pathname;
+            await navigator.serviceWorker.register(swUrl.href, {scope});
+            this.notificationRegistration = await navigator.serviceWorker.ready;
+            console.log("🔔 Family Service Worker READY:", this.notificationRegistration.scope);
+            return this.notificationRegistration;
+        } catch(e) {
+            this.notificationRegistration = null;
+            console.warn("Service worker:", e);
+            return null;
+        }
     },
 
     connectRealtime() {
@@ -347,7 +357,9 @@ const App = {
         if(/iPhone|iPad|iPod/i.test(navigator.userAgent) && !standalone){el.textContent="Добавьте Family на экран «Домой»";return;}
         if(Notification.permission!=="granted"){el.textContent="Нажмите «Включить» и разрешите уведомления";return;}
         try{
-            const sub=this.notificationRegistration && await this.notificationRegistration.pushManager.getSubscription();
+            const reg = this.notificationRegistration || await navigator.serviceWorker.ready;
+            this.notificationRegistration = reg;
+            const sub = await reg.pushManager.getSubscription();
             if(sub){el.textContent="Разрешены и подключены";return;}
             const status=await API.notificationStatus();
             const diag=await API.notificationDiagnostics();
@@ -367,18 +379,20 @@ const App = {
             const permission=await Notification.requestPermission();
             if(permission!=="granted"){this.updatePushStatus();throw new Error("Разрешение на уведомления не предоставлено.");}
             if(!this.notificationRegistration) await this.initPWA();
-            if(!this.notificationRegistration) throw new Error("Service Worker не запустился.");
+            const reg = this.notificationRegistration || await navigator.serviceWorker.ready;
+            this.notificationRegistration = reg;
+            if(!reg) throw new Error("Service Worker не запустился.");
             const key=await API.pushPublicKey();
             if(!key) throw new Error("Сервер не вернул ключ push. Обновите server.js на Family v6.2.");
           let subscription =
-    await this.notificationRegistration.pushManager.getSubscription();
+    await reg.pushManager.getSubscription();
 
 if (subscription) {
     await subscription.unsubscribe();
 }
 
 subscription =
-    await this.notificationRegistration.pushManager.subscribe({
+    await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: this.urlBase64ToUint8Array(key)
     });
@@ -396,7 +410,9 @@ await API.pushSubscribe(subscription.toJSON());
         try{
             if(Notification.permission!=="granted") throw new Error("Сначала нажмите «Включить» и разрешите уведомления.");
             if(!this.notificationRegistration) await this.initPWA();
-            const existing=await this.notificationRegistration?.pushManager.getSubscription();
+            const reg = this.notificationRegistration || await navigator.serviceWorker.ready;
+            this.notificationRegistration = reg;
+            const existing = await reg?.pushManager.getSubscription();
             if(!existing) throw new Error("Подписка push не создана. Сначала включите уведомления.");
             await API.pushSubscribe(existing.toJSON());
             const result=await API.testNotification();
