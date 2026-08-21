@@ -504,17 +504,51 @@ await API.pushSubscribe(subscription.toJSON());
 
     async openPrivateChat(otherId,silent=false){
         const navSeq=++this.chatNavSeq;
+        const me=Auth.currentUser;
+        if(!me)return;
         const cached=this.usersCache.find(u=>Number(u.id)===Number(otherId));
-        const other=cached||await Auth.getUserById(otherId); if(!other)return;
-        if(navSeq!==this.chatNavSeq)return;
-        this.leaveActiveChat(); document.body.dataset.privateUser=otherId; this.setActiveChat("private",this.getPrivateChatId(Auth.currentUser.id,otherId));
-        let messages=[];
-        try{ [this.usersCache,messages]=await Promise.all([API.users(),API.privateMessages(otherId)]); }catch(e){ console.warn("Private chat:",e); }
-        this._lastMessages=messages||[];
-        if(navSeq!==this.chatNavSeq || Number(document.body.dataset.privateUser)!==Number(otherId))return;
-        app.innerHTML=`<div class="page chat-page"><div class="header chat-header"><button onclick="App.showHome()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1><div class="chat-header-actions"><button onclick="App.startCall(${otherId},false,false)">📞</button><button onclick="App.startCall(${otherId},true,false)">🎥</button></div></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}${this.bottomNav("chat","chat")}</div>`;
-        this.scrollMessages("privateMessages",true); this.bindChatInput("privateInput",()=>this.sendPrivate(otherId)); this.hydrateLocalAudio("privateMessages");
-        requestAnimationFrame(()=>API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId)).catch(()=>{}));
+        const other=cached;
+        if(!other){
+            try{
+                const users=await API.users();
+                this.usersCache=users;
+            }catch(e){console.warn("Private user:",e);return;}
+        }
+        const target=this.usersCache.find(u=>Number(u.id)===Number(otherId));
+        if(!target || navSeq!==this.chatNavSeq)return;
+
+        this.leaveActiveChat();
+        document.body.dataset.privateUser=otherId;
+        const chatKey=this.getPrivateChatId(me.id,otherId);
+        this.setActiveChat("private",chatKey);
+
+        // Render the chat shell immediately. Never wait for the message request.
+        const cache=this._chatMessageCache ||= new Map();
+        const cachedMessages=cache.get(chatKey);
+        this._lastMessages=cachedMessages || [];
+        app.innerHTML=`<div class="page chat-page"><div class="header chat-header"><button onclick="App.showHome()">←</button>${this.avatarHtml(target,38)}<h1>${this.esc(target.name)}</h1><div class="chat-header-actions"><button onclick="App.startCall(${otherId},false,false)">📞</button><button onclick="App.startCall(${otherId},true,false)">🎥</button></div></div><div class="messages" id="privateMessages">${cachedMessages ? cachedMessages.map(m=>this.messageHtml(m,false,otherId)).join("") : `<div class="chat-loading">Загрузка сообщений…</div>`}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}${this.bottomNav("chat","chat")}</div>`;
+        this.scrollMessages("privateMessages",true);
+        this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));
+        this.hydrateLocalAudio("privateMessages");
+        requestAnimationFrame(()=>API.markRead("private",chatKey).catch(()=>{}));
+
+        // Load history in the background and update only the message area.
+        try{
+            const messages=await API.privateMessages(otherId);
+            cache.set(chatKey,messages||[]);
+            if(navSeq!==this.chatNavSeq || Number(document.body.dataset.privateUser)!==Number(otherId))return;
+            const box=document.getElementById("privateMessages");
+            if(!box)return;
+            const html=(messages||[]).map(m=>this.messageHtml(m,false,otherId)).join("");
+            box.innerHTML=html || `<div class="chat-empty">Нет сообщений</div>`;
+            this._lastMessages=messages||[];
+            this.scrollMessages("privateMessages",true);
+            this.hydrateLocalAudio("privateMessages");
+        }catch(e){
+            console.warn("Private chat:",e);
+            const box=document.getElementById("privateMessages");
+            if(box && navSeq===this.chatNavSeq) box.innerHTML=`<div class="chat-empty">Не удалось загрузить сообщения</div>`;
+        }
     },
 
     async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;const reply=this.replyTarget;try{const message=await API.sendPrivate(id,text,reply);input.value="";this.replyTarget=null;this.hideKeyboard();this.cosmicSound("send");this.appendSentMessage(message,false,id);}catch(e){alert(e.message);}},
