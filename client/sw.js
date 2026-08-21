@@ -1,16 +1,17 @@
-const CACHE = "family-shell-v13-1";
+const CACHE = "family-shell-v19";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./css/style.css?v=13",
+  "./css/style.css?v=19",
   "./js/config.js?v=3",
-  "./js/api.js?v=13",
-  "./js/auth.js?v=10",
-  "./js/app.js?v=13",
+  "./js/api.js?v=19",
+  "./js/auth.js?v=11",
+  "./js/app.js?v=19",
   "./assets/icon-180.png",
   "./assets/icon-512.png",
-  "./js/media.js?v=2"
+  "./assets/icon-180.png",
+  "./js/media.js?v=3"
 ];
 
 self.addEventListener("install", event => {
@@ -24,10 +25,22 @@ self.addEventListener("fetch", event => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  event.respondWith(fetch(req).then(res => {
-    if (res.ok) caches.open(CACHE).then(c => c.put(req, res.clone()));
-    return res;
-  }).catch(() => caches.match(req).then(r => r || caches.match("./index.html"))));
+  event.respondWith((async () => {
+    try {
+      const res = await fetch(req);
+      if (res.ok) {
+        try {
+          const cache = await caches.open(CACHE);
+          await cache.put(req, res.clone());
+        } catch (e) {
+          console.warn("Family SW cache:", e);
+        }
+      }
+      return res;
+    } catch (e) {
+      return (await caches.match(req)) || (await caches.match("./index.html"));
+    }
+  })());
 });
 
 self.addEventListener("push", event => {

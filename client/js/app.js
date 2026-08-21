@@ -25,6 +25,11 @@ const App = {
     callTargetName: "",
     callVideo: false,
     pendingIncomingCall: null,
+    activeChatScope: null,
+    activeChatKey: null,
+    callIceQueue: [],
+    incomingIceQueue: [],
+    callConnected: false,
 
 
     async start() {
@@ -47,17 +52,23 @@ const App = {
         if (this.ws) try { this.ws.close(); } catch {}
         this.ws = API.connectWS(msg => {
             if (msg.type === "global_message") {
-                if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) this.messageArrived(msg.message, true);
+                if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) {
+                    const active = this.isCurrentChat("global", "global");
+                    this.messageArrived(msg.message, true, active, "global", "global");
+                }
                 if (document.getElementById("messages")) this.updateOpenChatMessages(true, null, msg.message);
             }
             if (msg.type === "private_message") {
-                if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) {
-                    this.messageArrived(msg.message, false);
-                }
                 const otherId = Number(document.body.dataset.privateUser || 0);
-                if (otherId && this.getPrivateChatId(Auth.currentUser.id, otherId) === msg.chatId) {
-                    this.updateOpenChatMessages(false, otherId, msg.message);
-                }
+                const active = otherId && this.getPrivateChatId(Auth.currentUser.id, otherId) === msg.chatId;
+                if (Number(msg.message?.authorId) !== Number(Auth.currentUser?.id)) this.messageArrived(msg.message, false, active, "private", msg.chatId);
+                if (active) this.updateOpenChatMessages(false, otherId, msg.message);
+            }
+            if (msg.type === "group_message") {
+                const gid=String(msg.groupId);
+                const active=this.isCurrentChat("group",gid);
+                if(Number(msg.message?.authorId)!==Number(Auth.currentUser?.id)) this.messageArrived(msg.message,false,active,"group",gid);
+                if(active) this.updateOpenGroupMessages(gid,msg.message);
             }
             if (msg.type === "call_offer") this.receiveCallOffer(msg);
             if (msg.type === "call_answer") this.receiveCallAnswer(msg);
@@ -73,14 +84,15 @@ const App = {
         });
     },
 
-    async messageArrived(message, global) {
+    async messageArrived(message, global, activeChat=false, scope="", chatKey="") {
+        if (activeChat) return;
         this.cosmicSound("message");
         if(message?.type==="audio"&&message.audio?.data&&message.audio?.id){
             try{
                 const blob=await (await fetch(message.audio.data)).blob();
                 await MediaVault.put(message.audio.id,blob,message.audio.mime,message.audio.duration);
-                const key=global?"global":this.getPrivateChatId(Auth.currentUser.id,message.authorId);
-                await API.audioAck(global?"global":"private",key,message.id,message.audio.id);
+                const key=chatKey || (global?"global":this.getPrivateChatId(Auth.currentUser.id,message.authorId));
+                await API.audioAck(scope || (global?"global":"private"),key,message.id,message.audio.id);
             }catch(e){console.warn("Audio delivery:",e);}
         }
         try { if ("vibrate" in navigator) navigator.vibrate([40,30,40]); } catch {}
@@ -96,7 +108,7 @@ const App = {
             if(!Ctx)return;
             const ctx=new Ctx();
             const now=ctx.currentTime;
-            const notes=kind==="send"?[520,780]:kind==="record"?[330,495,660]:[660,990,1320];
+            const notes=kind==="send"?[520,780]:kind==="record"?[330,495,660]:kind==="call"?[880,660,880]:[660,990,1320];
             notes.forEach((freq,i)=>{
                 const osc=ctx.createOscillator(), gain=ctx.createGain();
                 osc.type=i===1?"sine":"triangle"; osc.frequency.setValueAtTime(freq,now+i*.08);
@@ -129,66 +141,53 @@ const App = {
     },
 
     async showHome() {
+        this.leaveActiveChat();
         ++this.chatNavSeq;
         const u = Auth.currentUser;
         if (!u) { this.showLogin(); return; }
 
-        let users = [];
-        let unread = {global:0, private:{}};
-        try { users = await Auth.getUsers(); } catch (e) { console.warn("Users:", e); }
-        try { unread = await API.unread(); } catch (e) { console.warn("Unread:", e); }
+        let data = {chats:[], unread:{global:0,private:{},groups:{}}};
+        try { data = await API.chats(); } catch(e) { console.warn("Home chats:", e); }
+        const chats = Array.isArray(data.chats) ? data.chats : [];
+        const totalUnread = Number(data.unread?.total || 0);
 
-        const privateCounts = unread.private || {};
-        const familyCount = Number(unread.global || 0);
-        const otherUsers = users.filter(x => Number(x.id) !== Number(u.id));
-
-        const dialogCards = await Promise.all(otherUsers.map(async user => {
-            let messages = [];
-            try { messages = await API.privateMessages(user.id); } catch {}
-            const last = messages?.[messages.length - 1];
-            const count = Number(privateCounts[String(user.id)] || 0);
-            const preview = last
-                ? (last.type === "audio" ? "🎙️ Голосовое сообщение" : (last.text || "Сообщение"))
-                : "Начните разговор";
-            return `<div class="home-dialog" onclick="App.openPrivateChat(${Number(user.id)})">
-                ${this.avatarHtml(user,54)}
-                <div class="home-dialog-main">
-                    <div class="home-dialog-top"><b>${this.esc(user.name)}</b>${user.presence?.online ? `<span class="online-dot">● онлайн</span>` : ""}</div>
-                    <div class="home-dialog-preview">${this.esc(preview)}</div>
-                </div>
-                ${count > 0 ? `<span class="home-unread">${count}</span>` : ""}
-            </div>`;
-        }));
-
-        const totalUnread = familyCount + Object.values(privateCounts).reduce((a,b) => a + Number(b || 0), 0);
+        const cards = chats.map(chat => {
+            const count = Number(chat.unread || 0);
+            const m = chat.lastMessage || {};
+            const preview = m.type === "audio" ? "🎙️ Голосовое сообщение"
+                : m.type === "photo" ? "📷 Фото"
+                : m.type === "video" ? "🎥 Видео"
+                : (m.text || "Сообщение");
+            const time = m.time ? new Date(m.time).toLocaleTimeString("ru-RU", {hour:"2-digit", minute:"2-digit"}) : "";
+            if (chat.scope === "private") {
+                const user = chat.user || {};
+                return `<div class="home-dialog" onclick="App.openPrivateChat(${Number(user.id)})">${this.avatarHtml(user,54)}<div class="home-dialog-main"><div class="home-dialog-top"><b>${this.esc(user.name || "Пользователь")}</b><span class="home-time">${time}</span></div><div class="home-dialog-preview">${this.esc(preview)}</div></div>${count ? `<span class="home-unread">${count}</span>` : ""}</div>`;
+            }
+            if (chat.scope === "group") {
+                return `<div class="home-dialog group-dialog" onclick="App.openGroupChat(${Number(chat.id)})"><div class="group-orbit">👥</div><div class="home-dialog-main"><div class="home-dialog-top"><b>${this.esc(chat.name)}</b><span class="home-time">${time}</span></div><div class="home-dialog-preview">${this.esc(preview)}</div></div>${count ? `<span class="home-unread">${count}</span>` : ""}</div>`;
+            }
+            return `<div class="home-dialog family-dialog" onclick="App.openGlobalChat()"><div class="family-orbit">🌌</div><div class="home-dialog-main"><div class="home-dialog-top"><b>Семья</b><span class="home-time">${time}</span></div><div class="home-dialog-preview">${this.esc(preview)}</div></div>${count ? `<span class="home-unread">${count}</span>` : ""}</div>`;
+        }).join("");
 
         app.innerHTML = `<div class="page home-page">
-            <div class="home-head">
-                <div class="home-brand-mark"><img src="assets/icon-180.png" alt="Family"></div>
-                <div class="home-brand-spacer"></div>
-                <button class="home-search-btn" aria-label="Поиск" onclick="App.toast('🔎 Family','Поиск по чатам добавим следующим этапом')">⌕</button>
-            </div>
-
-            <div class="home-section-head"><div><b>Чаты</b><small>${totalUnread ? `${totalUnread} новых` : "Все ваши разговоры"}</small></div>${familyCount > 0 ? `<span class="home-unread">${familyCount}</span>` : ""}</div>
-
-            <div class="home-chat-list">
-                <div class="home-dialog family-dialog" onclick="App.openGlobalChat()">
-                    <div class="family-orbit">🌌</div>
-                    <div class="home-dialog-main">
-                        <div class="home-dialog-top"><b>Семья</b><span class="home-time">Общий чат</span></div>
-                        <div class="home-dialog-preview">${familyCount ? `${familyCount} новых сообщения` : "Все вместе"}</div>
-                    </div>
-                    ${familyCount > 0 ? `<span class="home-unread">${familyCount}</span>` : ""}
-                </div>
-                ${dialogCards.join("") || `<div class="empty-family">Добавьте членов семьи в настройках</div>`}
-            </div>
-
-            <div class="home-quick-note">
-                <span>✦</span><div><b>Быстрые действия</b><small>Сообщение, фото, видео, голос или звонок</small></div>
-            </div>
-
+            <div class="home-head"><div class="home-brand-mark"><img src="assets/icon-180.png" alt="Family"></div><div class="home-brand-spacer"></div><button class="home-search-btn" aria-label="Поиск" onclick="App.toast('🔎 Family','Поиск по чатам добавим следующим этапом')">⌕</button></div>
+            <div class="home-section-head"><div><b>Чаты</b><small>${totalUnread ? `${totalUnread} новых` : "Ваши начатые разговоры"}</small></div></div>
+            <div class="home-chat-list">${cards || `<div class="empty-family"><b>Пока нет начатых чатов</b><small>Нажмите ✦, чтобы написать, создать группу или позвонить.</small></div>`}</div>
             ${this.bottomNav("chats")}
         </div>`;
+    },
+
+    async canUseFamilyChat(){ return !!Auth.currentUser?.familyChatMember; },
+
+    isCurrentChat(scope,key){ return this.activeChatScope===scope && String(this.activeChatKey)===String(key); },
+    setActiveChat(scope,key){
+        this.activeChatScope=scope; this.activeChatKey=String(key);
+        try{ this.ws?.send(JSON.stringify({type:"chat_open",scope,key:String(key)})); }catch{}
+    },
+    leaveActiveChat(){
+        if(this.activeChatScope){ try{this.ws?.send(JSON.stringify({type:"chat_close",scope:this.activeChatScope,key:String(this.activeChatKey)}));}catch{} }
+        this.activeChatScope=null; this.activeChatKey=null;
+        document.body.dataset.privateUser="";
     },
 
     bottomNav(active="home", mode="page") {
@@ -207,11 +206,13 @@ const App = {
         el.innerHTML=`<div class="quick-sheet quick-sheet-center" onclick="event.stopPropagation()">
             <div class="quick-sheet-handle"></div>
             <div class="quick-sheet-title"><span>✦</span> Быстрые действия</div>
-            <button onclick="App.quickChoose('message')"><span>💬</span><div><b>Сообщение</b><small>Начать личный разговор</small></div><i>›</i></button>
-            <button onclick="App.quickChoose('photo')"><span>📷</span><div><b>Фото</b><small>Отправить фотографию семье</small></div><i>›</i></button>
-            <button onclick="App.quickChoose('video')"><span>🎥</span><div><b>Видео</b><small>Отправить видеозапись</small></div><i>›</i></button>
-            <button onclick="App.quickChoose('voice')"><span>🎙️</span><div><b>Голос</b><small>Записать голосовое сообщение</small></div><i>›</i></button>
-            <button onclick="App.quickChoose('call')"><span>📞</span><div><b>Звонок</b><small>Позвонить члену семьи</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('message')"><span>💬</span><div><b>Новое сообщение</b><small>Начать личный разговор</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('group')"><span>👥</span><div><b>Создать группу</b><small>Выбрать участников семьи</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('audioCall')"><span>📞</span><div><b>Голосовой звонок</b><small>Позвонить члену семьи</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('videoCall')"><span>🎥</span><div><b>Видеозвонок</b><small>Позвонить с камерой</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('photo')"><span>📷</span><div><b>Фото</b><small>Отправить фотографию</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('video')"><span>🎬</span><div><b>Видео</b><small>Отправить видеозапись</small></div><i>›</i></button>
+            <button onclick="App.quickChoose('voice')"><span>🎙️</span><div><b>Голосовое</b><small>Записать голосовое сообщение</small></div><i>›</i></button>
             <button onclick="this.closest('.quick-sheet-backdrop').remove()"><span>×</span><div><b>Закрыть</b><small>Вернуться назад</small></div></button>
         </div>`;
         el.addEventListener("click",()=>el.remove());
@@ -221,26 +222,30 @@ const App = {
     async quickChoose(action) {
         document.querySelectorAll(".quick-sheet-backdrop").forEach(x=>x.remove());
         this.pendingQuickAction=action;
-        if(action==="message"||action==="photo"||action==="video"||action==="voice"||action==="call") return this.openUsers(action);
+        if(action==="group") return this.createGroup();
+        if(action==="message"||action==="photo"||action==="video"||action==="voice"||action==="audioCall"||action==="videoCall") return this.openUsers(action);
     },
 
     async quickRecipient(target, action=this.pendingQuickAction) {
         this.pendingQuickAction=null;
         if(target==="global") {
             if(action==="message") return this.openGlobalChat();
-            if(action==="call") return this.startCall(null,false,true);
+            if(action==="audioCall") return this.startCall(null,false,true);
+            if(action==="videoCall") return this.startCall(null,true,true);
             if(action==="voice") { await this.openGlobalChat(); return this.toggleRecording("global",null); }
             if(action==="photo"||action==="video") return this.pickAndSendMedia("global",null,action);
         }
         const id=Number(target);
         if(!id)return;
         if(action==="message") return this.openPrivateChat(id);
-        if(action==="call") return this.startCall(id,false,false);
+        if(action==="audioCall") return this.startCall(id,false,false);
+        if(action==="videoCall") return this.startCall(id,true,false);
         if(action==="voice") { await this.openPrivateChat(id); return this.toggleRecording("private",id); }
-        if(action==="photo"||action==="video") return this.pickAndSendMedia("private",id,action);
+        if(action==="photo"||action==="video") { await this.openPrivateChat(id); return this.pickAndSendMedia("private",id,action); }
     },
 
     async openSettings() {
+        this.leaveActiveChat();
         const privateId=Number(document.body.dataset.privateUser||0);
         this.settingsReturnTarget=document.getElementById("messages")?"global":(privateId?`private:${privateId}`:"home");
         ++this.chatNavSeq;
@@ -274,6 +279,7 @@ const App = {
     },
 
     async openProfile() {
+        this.leaveActiveChat();
         const privateId=Number(document.body.dataset.privateUser||0);
         this.profileReturnTarget=document.getElementById("messages")?"global":(privateId?`private:${privateId}`:"home");
         ++this.chatNavSeq;
@@ -428,6 +434,7 @@ await API.pushSubscribe(subscription.toJSON());
         this.appearanceMode=mode;localStorage.setItem("FamilyMode",mode);this.applyAppearance();this.openProfile();
     },
     async openAdmin() {
+        this.leaveActiveChat();
         ++this.chatNavSeq;
         if(!Auth.isAdmin())return;const users=await Auth.getUsers();
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>👑 Пользователи</h1></div><div class="content">
@@ -441,10 +448,11 @@ await API.pushSubscribe(subscription.toJSON());
     async removeUser(id){const u=await Auth.getUserById(id);if(!u)return;if(!confirm(`Удалить "${u.name}"?`))return;const r=await Auth.deleteUser(id);if(!r.success)alert(r.error);else await this.openAdmin();},
 
     async openUsers(targetAction=null){
+        this.leaveActiveChat();
         ++this.chatNavSeq;
         const users=await Auth.getUsers(),me=Auth.currentUser;
-        const actionLabel={message:"Отправить сообщение",photo:"Выбрать фото",video:"Выбрать видео",voice:"Записать голос",call:"Позвонить"}[targetAction]||"Открыть диалог";
-        const familyRow=targetAction?`<div class="dialog-card quick-recipient" onclick="App.quickRecipient('global','${targetAction}')"><div class="family-orbit">🌌</div><div class="dialog-main"><div class="dialog-name">Семья</div><div class="dialog-preview">${actionLabel} · общий чат</div></div></div>`:"";
+        const actionLabel={message:"Отправить сообщение",photo:"Выбрать фото",video:"Выбрать видео",voice:"Записать голос",audioCall:"Голосовой звонок",videoCall:"Видеозвонок"}[targetAction]||"Открыть диалог";
+        const familyRow=(targetAction && ["message","photo","video","voice"].includes(targetAction))?`<div class="dialog-card quick-recipient" onclick="App.quickRecipient('global','${targetAction}')"><div class="family-orbit">🌌</div><div class="dialog-main"><div class="dialog-name">Семья</div><div class="dialog-preview">${actionLabel} · общий чат</div></div></div>`:"";
         app.innerHTML=`<div class="page"><div class="header"><button onclick="App.showHome()">←</button><h1>${targetAction?"Кому?":"👤 Личные"}</h1></div><div class="content dialog-list">${familyRow}${users.filter(u=>u.id!==me.id).map(u=>`<div class="dialog-card quick-recipient" onclick="${targetAction?`App.quickRecipient(${u.id},'${targetAction}')`:`App.openPrivateChat(${u.id})`}">${this.avatarHtml(u,48)}<div class="dialog-main"><div class="dialog-name">${this.esc(u.name)}</div><div class="dialog-preview">${targetAction?actionLabel:`@${this.esc(u.login)} ${u.presence?.online?"· 🟢 онлайн":""}`}</div></div></div>`).join("")}</div>${this.bottomNav("chats")}</div>`;
     },
 
@@ -456,36 +464,55 @@ await API.pushSubscribe(subscription.toJSON());
 
     async openPrivateChat(otherId,silent=false){
         const navSeq=++this.chatNavSeq;
-        const other=await Auth.getUserById(otherId);if(!other)return;
+        const cached=this.usersCache.find(u=>Number(u.id)===Number(otherId));
+        const other=cached||await Auth.getUserById(otherId); if(!other)return;
         if(navSeq!==this.chatNavSeq)return;
-        document.body.dataset.privateUser=otherId;
-        try{this.usersCache=await API.users();}catch{}
-        let messages=await API.privateMessages(otherId);
-        messages=await this.cacheFetchedAudio(messages,false,otherId);
-        this._lastMessages=messages;
-        try{await API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId));}catch(e){}
+        this.leaveActiveChat(); document.body.dataset.privateUser=otherId; this.setActiveChat("private",this.getPrivateChatId(Auth.currentUser.id,otherId));
+        let messages=[];
+        try{ [this.usersCache,messages]=await Promise.all([API.users(),API.privateMessages(otherId)]); }catch(e){ console.warn("Private chat:",e); }
+        this._lastMessages=messages||[];
         if(navSeq!==this.chatNavSeq || Number(document.body.dataset.privateUser)!==Number(otherId))return;
         app.innerHTML=`<div class="page chat-page"><div class="header chat-header"><button onclick="App.showHome()">←</button>${this.avatarHtml(other,38)}<h1>${this.esc(other.name)}</h1><div class="chat-header-actions"><button onclick="App.startCall(${otherId},false,false)">📞</button><button onclick="App.startCall(${otherId},true,false)">🎥</button></div></div><div class="messages" id="privateMessages">${messages.map(m=>this.messageHtml(m,false,otherId)).join("")}</div>${this.chatFooter("private",otherId,"Напишите сообщение...")}${this.bottomNav("chat","chat")}</div>`;
-        this.scrollMessages("privateMessages", true);
-        this.bindChatInput("privateInput",()=>this.sendPrivate(otherId));
-        this.hydrateLocalAudio("privateMessages");
+        this.scrollMessages("privateMessages",true); this.bindChatInput("privateInput",()=>this.sendPrivate(otherId)); this.hydrateLocalAudio("privateMessages");
+        requestAnimationFrame(()=>API.markRead("private",this.getPrivateChatId(Auth.currentUser.id,otherId)).catch(()=>{}));
     },
 
-    async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendPrivate(id,text,this.replyTarget);input.value="";this.replyTarget=null;this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
+    async sendPrivate(id){const input=document.getElementById("privateInput");if(!input)return;const text=input.value.trim();if(!text)return;const reply=this.replyTarget;try{const message=await API.sendPrivate(id,text,reply);input.value="";this.replyTarget=null;this.hideKeyboard();this.cosmicSound("send");this.appendSentMessage(message,false,id);}catch(e){alert(e.message);}},
 
     async openGlobalChat(silent=false){
-        const navSeq=++this.chatNavSeq;
-        try{this.usersCache=await API.users();}catch{}
-        let messages=await API.globalMessages();messages=await this.cacheFetchedAudio(messages,true,null);this._lastMessages=messages;try{await API.markRead("global","global");}catch(e){}
-        if(navSeq!==this.chatNavSeq)return;
-        document.body.dataset.privateUser="";
+        const navSeq=++this.chatNavSeq; this.leaveActiveChat();
+        let messages=[]; try{ [this.usersCache,messages]=await Promise.all([API.users(),API.globalMessages()]); }catch(e){console.warn("Global chat:",e);}
+        this._lastMessages=messages||[]; if(navSeq!==this.chatNavSeq)return;
+        this.setActiveChat("global","global");
         app.innerHTML=`<div class="page chat-page"><div class="header chat-header"><button onclick="App.showHome()">←</button><h1>🌌 Семья</h1><div class="chat-header-actions"><button onclick="App.startCall(null,false,true)">📞</button></div></div><div class="messages" id="messages">${messages.map(m=>this.messageHtml(m,true)).join("")}</div>${this.chatFooter("global",null,"Напишите семье...")}${this.bottomNav("chat","chat")}</div>`;
-        this.scrollMessages("messages", true);this.bindChatInput("messageInput",()=>this.sendGlobal());this.hydrateLocalAudio("messages");
+        this.scrollMessages("messages",true);this.bindChatInput("messageInput",()=>this.sendGlobal());this.hydrateLocalAudio("messages");
+        requestAnimationFrame(()=>API.markRead("global","global").catch(()=>{}));
     },
 
-    async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;try{await API.sendGlobal(text,this.replyTarget);input.value="";this.replyTarget=null;this.hideKeyboard();this.cosmicSound("send");}catch(e){alert(e.message);}},
+    async sendGlobal(){const input=document.getElementById("messageInput");if(!input)return;const text=input.value.trim();if(!text)return;const reply=this.replyTarget;try{const message=await API.sendGlobal(text,reply);input.value="";this.replyTarget=null;this.hideKeyboard();this.cosmicSound("send");this.appendSentMessage(message,true,null);}catch(e){alert(e.message);}},
 
-    chatFooter(scope,id,placeholder){const inputId=scope==="global"?"messageInput":"privateInput";return `${this.replyTarget?`<div class="reply-bar"><b>↩️ Ответ</b><span>${this.esc(this.replyTarget.text||"Голосовое сообщение")}</span><button onclick="App.clearReply()">×</button></div>`:""}<div class="footer"><button class="tool-btn" title="Медиа" onclick="App.openChatMediaMenu('${scope}',${id===null?"null":id})">＋</button><button class="tool-btn" title="Эмодзи" onclick="App.showEmojiPicker(this,'${inputId}')">😊</button><button class="tool-btn" id="micBtn" title="Голосовое сообщение" onclick="App.toggleRecording('${scope}',${id===null?"null":id})">🎙️</button><input id="${inputId}" placeholder="${placeholder}" autocomplete="off"><button class="primary send-btn" onclick="${scope==="global"?"App.sendGlobal()":"App.sendPrivate("+id+")"}">➤</button></div>`;},
+    async createGroup(){
+        let users=[]; try{users=await Auth.getUsers();}catch{}
+        const others=users.filter(u=>Number(u.id)!==Number(Auth.currentUser.id));
+        if(!others.length){this.toast("👥 Группа","Добавьте ещё хотя бы одного пользователя");return;}
+        const el=document.createElement("div");el.className="quick-sheet-backdrop";el.innerHTML=`<div class="quick-sheet quick-sheet-center" onclick="event.stopPropagation()"><div class="quick-sheet-handle"></div><div class="quick-sheet-title">👥 Новый общий чат</div><input id="groupName" class="group-name-input" placeholder="Название группы"><div class="group-member-list">${others.map(u=>`<label><input type="checkbox" value="${u.id}"> ${this.esc(u.name)}</label>`).join("")}</div><button class="primary" onclick="App.saveGroupFromSheet()">Создать группу</button><button onclick="this.closest('.quick-sheet-backdrop').remove()">Отмена</button></div>`;
+        document.body.appendChild(el);
+    },
+    async saveGroupFromSheet(){
+        const name=document.getElementById("groupName")?.value.trim(); const ids=[...document.querySelectorAll(".group-member-list input:checked")].map(x=>Number(x.value));
+        if(!name||!ids.length){alert("Введите название и выберите участников");return;}
+        try{const g=await API.createGroup({name,memberIds:ids});document.querySelectorAll(".quick-sheet-backdrop").forEach(x=>x.remove());this.toast("👥 Группа создана",g.name);await this.openGroupChat(g.id);}catch(e){alert(e.message);}
+    },
+    async openGroupChat(groupId){
+        const navSeq=++this.chatNavSeq; this.leaveActiveChat(); let groups=[];let messages=[];try{[groups,messages]=await Promise.all([API.groups(),API.groupMessages(groupId)]);}catch(e){alert(e.message);return;}
+        const group=groups.find(g=>Number(g.id)===Number(groupId));if(!group)return;this.usersCache=group.members||[];messages=await this.cacheFetchedAudio(messages,false,groupId,"group");this._lastMessages=messages||[];if(navSeq!==this.chatNavSeq)return;this.setActiveChat("group",String(groupId));
+        app.innerHTML=`<div class="page chat-page"><div class="header chat-header"><button onclick="App.showHome()">←</button><div class="group-orbit small">👥</div><h1>${this.esc(group.name)}</h1></div><div class="messages" id="groupMessages">${messages.map(m=>this.messageHtml(m,false,groupId)).join("")}</div>${this.chatFooter("group",groupId,"Напишите в группу...")}${this.bottomNav("chat","chat")}</div>`;
+        this.scrollMessages("groupMessages",true);this.bindChatInput("groupInput",()=>this.sendGroup(groupId));requestAnimationFrame(()=>API.markRead("group",String(groupId)).catch(()=>{}));
+    },
+    async sendGroup(id){const input=document.getElementById("groupInput");if(!input)return;const text=input.value.trim();if(!text)return;const reply=this.replyTarget;try{const message=await API.sendGroup(id,text,reply);input.value="";this.replyTarget=null;this.hideKeyboard();this.cosmicSound("send");this.appendSentMessage(message,false,id,"group");}catch(e){alert(e.message);}},
+    updateOpenGroupMessages(groupId,message){const box=document.getElementById("groupMessages");if(!box||!message||!this.isCurrentChat("group",groupId))return;this.updateOpenChatMessages(false,groupId,message,"group");},
+
+    chatFooter(scope,id,placeholder){const inputId=scope==="global"?"messageInput":scope==="group"?"groupInput":"privateInput";const send=scope==="global"?"App.sendGlobal()":scope==="group"?`App.sendGroup(${id})`:`App.sendPrivate(${id})`;return `${this.replyTarget?`<div class="reply-bar"><b>↩️ Ответ</b><span>${this.esc(this.replyTarget.text||"Голосовое сообщение")}</span><button onclick="App.clearReply()">×</button></div>`:""}<div class="footer"><button class="tool-btn" title="Медиа" onclick="App.openChatMediaMenu('${scope}',${id===null?"null":id})">＋</button><button class="tool-btn" title="Эмодзи" onclick="App.showEmojiPicker(this,'${inputId}')">😊</button><button class="tool-btn" id="micBtn" title="Голосовое сообщение" onclick="App.toggleRecording('${scope}',${id===null?"null":id})">🎙️</button><input id="${inputId}" placeholder="${placeholder}" autocomplete="off"><button class="primary send-btn" onclick="${send}">➤</button></div>`;},
 
     openChatMediaMenu(scope,id){
         document.querySelectorAll(".chat-media-menu").forEach(x=>x.remove());
@@ -502,9 +529,9 @@ await API.pushSubscribe(subscription.toJSON());
             if(kind==="photo") blob=await this.compressPhoto(file);
             const data=await this.blobToDataURL(blob);
             const media={id:crypto.randomUUID?.()||String(Date.now())+Math.random(),mime:blob.type||file.type,data,name:file.name,size:blob.size};
-            const sent=scope==="global"?await API.sendGlobalMedia(media,this.replyTarget):await API.sendPrivateMedia(id,media,this.replyTarget);
+            const sent=scope==="global"?await API.sendGlobalMedia(media,this.replyTarget):scope==="group"?await API.sendGroupMedia(id,media,this.replyTarget):await API.sendPrivateMedia(id,media,this.replyTarget);
             this.replyTarget=null;this.cosmicSound("send");
-            if(scope==="global")await this.openGlobalChat();else await this.openPrivateChat(id);
+            this.appendSentMessage(sent,scope==="global",id);
         }catch(e){alert("Не удалось отправить медиа: "+(e?.message||"ошибка"));}};input.click();
     },
     compressPhoto(file){return new Promise((resolve,reject)=>{const url=URL.createObjectURL(file);const img=new Image();img.onload=()=>{try{const max=1600,scale=Math.min(1,max/Math.max(img.width,img.height)),c=document.createElement("canvas");c.width=Math.max(1,Math.round(img.width*scale));c.height=Math.max(1,Math.round(img.height*scale));c.getContext("2d").drawImage(img,0,0,c.width,c.height);c.toBlob(b=>b?resolve(b):reject(new Error("Не удалось обработать фото")),"image/jpeg",.82);}finally{URL.revokeObjectURL(url);}};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Не удалось прочитать фото"));};img.src=url;});},
@@ -516,18 +543,31 @@ await API.pushSubscribe(subscription.toJSON());
         if(force) requestAnimationFrame(move);
     },
 
-    updateOpenChatMessages(global, otherId, message){
-        const box=document.getElementById(global ? "messages" : "privateMessages");
+    appendSentMessage(message,global,otherId,forcedScope=null){
+        const scope = forcedScope || this.activeChatScope || (global ? "global" : "private");
+        const box=document.getElementById(scope==="global"?"messages":scope==="group"?"groupMessages":"privateMessages");
+        if(!box||!message)return;
+        if(box.querySelector(`[data-message-id="${Number(message.id)}"]`))return;
+        this._lastMessages=[...(this._lastMessages||[]),message];
+        const wasBottom=(box.scrollHeight-box.scrollTop-box.clientHeight)<140;
+        box.insertAdjacentHTML("beforeend",this.messageHtml(message,scope==="global",otherId));
+        if(wasBottom)requestAnimationFrame(()=>box.scrollTop=box.scrollHeight);
+        this.hydrateLocalAudio(scope==="global"?"messages":scope==="group"?"groupMessages":"privateMessages");
+    },
+
+    updateOpenChatMessages(global, otherId, message, forcedScope=null){
+        const scope=forcedScope|| (global?"global":"private");
+        const box=document.getElementById(scope==="global"?"messages":scope==="group"?"groupMessages":"privateMessages");
         if(!box || !message)return;
-        const input=global ? document.getElementById("messageInput") : document.getElementById("privateInput");
+        const input=scope==="global" ? document.getElementById("messageInput") : scope==="group" ? document.getElementById("groupInput") : document.getElementById("privateInput");
         const typing=Boolean(input && document.activeElement===input && input.value.length>0);
         const nearBottom=(box.scrollHeight-box.scrollTop-box.clientHeight)<120;
         const exists=box.querySelector(`[data-message-id="${Number(message.id)}"]`);
         if(exists)return;
         this._lastMessages=[...(this._lastMessages||[]),message];
-        box.insertAdjacentHTML("beforeend",this.messageHtml(message,global,otherId));
+        box.insertAdjacentHTML("beforeend",this.messageHtml(message,scope==="global",otherId));
         if(nearBottom && !typing) requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
-        this.hydrateLocalAudio(global ? "messages" : "privateMessages");
+        this.hydrateLocalAudio(scope==="global" ? "messages" : scope==="group" ? "groupMessages" : "privateMessages");
     },
 
     linkify(text){
@@ -540,13 +580,13 @@ await API.pushSubscribe(subscription.toJSON());
     },
 
     messageHtml(m,global,otherId){
-        const mine=Number(m.authorId)===Number(Auth.currentUser.id),scope=global?"global":"private",key=global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId),reactions=Object.entries(m.reactions||{}).filter(([,ids])=>ids.length);
+        const mine=Number(m.authorId)===Number(Auth.currentUser.id),scope=global?"global":(this.activeChatScope==="group"?"group":"private"),key=global?"global":scope==="group"?String(otherId):this.getPrivateChatId(Auth.currentUser.id,otherId),reactions=Object.entries(m.reactions||{}).filter(([,ids])=>ids.length);
         const authorUser=this.usersCache.find(u=>Number(u.id)===Number(m.authorId))||m;
         const avatar=!mine?this.avatarHtml(authorUser,34):"";
         const hasAudio=m.type==="audio"&&m.audio;
         const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
         const mediaData=m.media?.data?this.attr(m.media.data):"";
-        const media=m.type==="audio"&&m.audio?`<div class="voice-message"><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><audio class="family-audio" controls preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio>${m.audio.duration?`<span>${this.formatDuration(m.audio.duration)}</span>`:""}</div>`:m.type==="photo"&&m.media?`<div class="media-message"><img src="${mediaData}" alt="Фото" loading="lazy"></div>`:m.type==="video"&&m.media?`<div class="media-message"><video src="${mediaData}" controls playsinline preload="metadata"></video></div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
+        const media=m.type==="audio"&&m.audio?`<div class="voice-message"><button class="voice-circle" data-audio-id="${this.attr(m.audio.id||"")}" onclick="App.playVoice(this)">▶</button><div><div class="voice-title">🎙️ Голосовое <span class="voice-local">${m.audio.data?"":"на устройстве"}</span></div><span class="voice-duration">${m.audio.duration?this.formatDuration(m.audio.duration):""}</span></div><audio class="family-audio" preload="metadata" ${audioSrc?`src="${audioSrc}"`:""} data-audio-id="${this.attr(m.audio.id||"")}"></audio></div>`:m.type==="photo"&&m.media?`<div class="media-message"><img src="${mediaData}" alt="Фото" loading="lazy"></div>`:m.type==="video"&&m.media?`<div class="media-message"><video src="${mediaData}" controls playsinline preload="metadata"></video></div>`:`<div class="message-text">${this.linkify(m.text||"")}</div>`;
         const reply=m.replyTo?`<div class="reply-quote">↩️ ${this.esc(m.replyTo.author||"")}<br><span>${this.esc(m.replyTo.text||"Голосовое сообщение")}</span></div>`:"";
         const favorite=this.isFavorite(scope,key,m.id);
         const menu=`<button class="message-menu-btn" onclick="event.stopPropagation();App.messageMenu(event,'${scope}','${key}',${m.id},${mine})">⋯</button>`;
@@ -588,7 +628,7 @@ await API.pushSubscribe(subscription.toJSON());
     return true;
 },
     async startCall(targetId,video=false,global=false){
-        if(global){alert("Групповые звонки сделаем отдельным этапом. Сейчас доступны личные звонки.");return;}
+        if(global){alert("Для звонков выберите конкретного человека.");return;}
         if(!targetId)return;
         const other=await Auth.getUserById(targetId);if(!other)return;
         if(!navigator.mediaDevices?.getUserMedia||!window.RTCPeerConnection){alert("Звонки не поддерживаются этим браузером.");return;}
@@ -599,14 +639,20 @@ await API.pushSubscribe(subscription.toJSON());
             this.showCallOverlay("calling",other.name,video);
             const pc=this.createPeerConnection();this.callPc=pc;this.callStream.getTracks().forEach(t=>pc.addTrack(t,this.callStream));
             const offer=await pc.createOffer();await pc.setLocalDescription(offer);
-            this.sendCallSignal({type:"call_offer",to:Number(targetId),video:!!video,offer});
+            if(!this.sendCallSignal({type:"call_offer",to:Number(targetId),video:!!video,offer})) throw new Error("Не удалось передать сигнал звонка");
         }catch(e){await this.closeCallResources();alert("Не удалось начать звонок: "+(e?.message||e));}
     },
     createPeerConnection(){
         const pc=new RTCPeerConnection({iceServers:[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}]});
-        pc.onicecandidate=e=>{if(e.candidate)this.sendCallSignal({type:"call_ice",to:this.callTargetId,candidate:e.candidate});};
+        pc.onicecandidate=e=>{if(e.candidate){const payload={type:"call_ice",to:this.callTargetId,candidate:e.candidate};if(!this.sendCallSignal(payload))this.callIceQueue.push(payload);}};
         pc.ontrack=e=>{const v=document.getElementById("callRemote");if(v){v.srcObject=e.streams[0];v.play?.().catch(()=>{});}};
-        pc.onconnectionstatechange=()=>{if(["failed","disconnected","closed"].includes(pc.connectionState))this.endCall(false);};
+        pc.onconnectionstatechange=()=>{
+            if(pc.connectionState==="connected"){
+                this.callConnected=true;
+                const el=document.querySelector(".call-top span"); if(el) el.textContent="На связи";
+            }
+            if(["failed","closed"].includes(pc.connectionState))this.endCall(false);
+        };
         return pc;
     },
     showCallOverlay(state,name,video){
@@ -618,7 +664,8 @@ await API.pushSubscribe(subscription.toJSON());
     async receiveCallOffer(msg){
         if(Number(msg.from)===Number(Auth.currentUser?.id))return;
         if(this.callPc||this.pendingIncomingCall){this.sendCallSignal({type:"call_end",to:Number(msg.from)});return;}
-        this.callTargetId=Number(msg.from);this.callTargetName=String(msg.fromName||"Семья");this.callVideo=!!msg.video;this.pendingIncomingCall=msg;
+        this.callTargetId=Number(msg.from);this.callTargetName=String(msg.fromName||"Семья");this.callVideo=!!msg.video;this.pendingIncomingCall=msg;this.incomingIceQueue=[];
+        this.cosmicSound("call");
         this.showCallOverlay("incoming",this.callTargetName,this.callVideo);
     },
     async acceptIncomingCall(){
@@ -626,16 +673,34 @@ await API.pushSubscribe(subscription.toJSON());
         try{
             this.pendingIncomingCall=null;this.callStream=await navigator.mediaDevices.getUserMedia({audio:true,video:this.callVideo});
             const pc=this.createPeerConnection();this.callPc=pc;this.callStream.getTracks().forEach(t=>pc.addTrack(t,this.callStream));
-            await pc.setRemoteDescription(msg.offer);const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+            await pc.setRemoteDescription(msg.offer);
+            for(const candidate of this.incomingIceQueue.splice(0)){try{await pc.addIceCandidate(candidate);}catch(e){console.warn("Queued ICE:",e);}}
+            const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
             this.showCallOverlay("connected",this.callTargetName,this.callVideo);
-            this.sendCallSignal({type:"call_answer",to:this.callTargetId,answer});
+            if(!this.sendCallSignal({type:"call_answer",to:this.callTargetId,answer})) throw new Error("Не удалось передать ответ на звонок");
+            this.flushCallIce();
         }catch(e){this.pendingIncomingCall=null;await this.closeCallResources();alert("Не удалось принять звонок: "+(e?.message||e));}
     },
     declineIncomingCall(){const id=this.callTargetId;if(id)this.sendCallSignal({type:"call_end",to:id});this.pendingIncomingCall=null;this.endCall(false);},
-    async receiveCallAnswer(msg){if(!this.callPc)return;try{await this.callPc.setRemoteDescription(msg.answer);const el=document.querySelector(".call-top span");if(el)el.textContent="На связи";}catch(e){console.warn("Call answer:",e);}},
-    async receiveCallIce(msg){if(!this.callPc||!msg.candidate)return;try{await this.callPc.addIceCandidate(msg.candidate);}catch(e){console.warn("Call ICE:",e);}},
+    flushCallIce(){const queue=this.callIceQueue.splice(0);for(const payload of queue)this.sendCallSignal(payload);},
+    async receiveCallAnswer(msg){
+        if(!this.callPc)return;
+        try{
+            await this.callPc.setRemoteDescription(msg.answer);
+            for(const candidate of this.incomingIceQueue.splice(0)){try{await this.callPc.addIceCandidate(candidate);}catch(e){console.warn("Queued ICE:",e);}}
+            const el=document.querySelector(".call-top span");if(el)el.textContent="На связи";
+        }catch(e){console.warn("Call answer:",e);}
+    },
+    async receiveCallIce(msg){
+        if(!msg.candidate)return;
+        if(!this.callPc || !this.callPc.remoteDescription){
+            if(Number(msg.from)===Number(this.callTargetId)) this.incomingIceQueue.push(msg.candidate);
+            return;
+        }
+        try{await this.callPc.addIceCandidate(msg.candidate);}catch(e){console.warn("Call ICE:",e);}
+    },
     async endCall(notify=true){if(notify&&this.callTargetId)this.sendCallSignal({type:"call_end",to:this.callTargetId});this.pendingIncomingCall=null;await this.closeCallResources();document.querySelectorAll(".call-overlay").forEach(x=>x.remove());},
-    async closeCallResources(){try{this.callPc?.close();}catch{}this.callPc=null;this.callStream?.getTracks().forEach(t=>t.stop());this.callStream=null;this.callTargetId=null;this.callTargetName="";this.callVideo=false;},
+    async closeCallResources(){try{this.callPc?.close();}catch{}this.callPc=null;this.callStream?.getTracks().forEach(t=>t.stop());this.callStream=null;this.callTargetId=null;this.callTargetName="";this.callVideo=false;this.callIceQueue=[];this.incomingIceQueue=[];this.callConnected=false;},
 
     async toggleRecording(scope,id){
         if(this.audioSending){return;}
@@ -668,10 +733,10 @@ await API.pushSubscribe(subscription.toJSON());
                 try{
                     const data=await this.blobToDataURL(blob);
                     const audio={mime:blob.type||type,data,duration:Math.round(duration*10)/10};
-                    const sent=scope==="global"?await API.sendGlobalAudio(audio,this.replyTarget):await API.sendPrivateAudio(id,audio,this.replyTarget);
+                    const sent=scope==="global"?await API.sendGlobalAudio(audio,this.replyTarget):scope==="group"?await API.sendGroupAudio(id,audio,this.replyTarget):await API.sendPrivateAudio(id,audio,this.replyTarget);
                     if(sent?.audio?.id) await MediaVault.put(sent.audio.id,blob,blob.type||type,duration);
                     this.replyTarget=null;this.audioSending=false;this.hideKeyboard();this.cosmicSound("send");
-                    if(scope==="global")await this.openGlobalChat();else await this.openPrivateChat(id);
+                    this.appendSentMessage(sent,scope==="global",id);
                 }catch(e){
                     this.audioSending=false;this.setRecordingUI(false);
                     alert("Не удалось отправить голосовое: "+(e?.message||"ошибка сервера"));
@@ -681,6 +746,12 @@ await API.pushSubscribe(subscription.toJSON());
         }catch(e){this.stopRecordingResources();alert("Не удалось получить доступ к микрофону: "+(e?.message||"проверьте разрешение микрофона"));}
     },
     stopRecordingResources(){clearInterval(this.recordingTimer);this.recordingTimer=null;this.mediaStream?.getTracks().forEach(t=>t.stop());this.mediaStream=null;this.mediaRecorder=null;this.setRecordingUI(false);},
+    async playVoice(btn){
+        const id=btn?.dataset.audioId;if(!id)return;
+        const root=btn.closest(".voice-message");const audio=root?.querySelector("audio");if(!audio)return;
+        if(!audio.src){try{const item=await MediaVault.get(id);if(item?.blob)audio.src=URL.createObjectURL(item.blob);}catch(e){console.warn("Voice:",e);}}
+        try{if(audio.paused){await audio.play();btn.textContent="❚❚";audio.onended=()=>btn.textContent="▶";}else{audio.pause();btn.textContent="▶";}}catch(e){console.warn("Voice playback:",e);}
+    },
     async hydrateLocalAudio(containerId){
         const root=document.getElementById(containerId);if(!root)return;
         const audios=[...root.querySelectorAll("audio.family-audio[data-audio-id]")];
@@ -692,14 +763,14 @@ await API.pushSubscribe(subscription.toJSON());
     setRecordingUI(active){const btn=document.getElementById("micBtn");if(!btn)return;if(active==="sending"){btn.classList.add("recording");btn.innerHTML="⏳";btn.title="Отправка голосового…";return;}if(active){btn.classList.add("recording");btn.innerHTML='<span class="record-dot">●</span><span class="record-time">0:00</span>';this.recordingTimer=setInterval(()=>{const s=(Date.now()-this.recordingStarted)/1000;const t=btn.querySelector(".record-time");if(t)t.textContent=this.formatDuration(s);btn.title=`Запись ${this.formatDuration(s)}`;},250);}else{clearInterval(this.recordingTimer);this.recordingTimer=null;btn.classList.remove("recording");btn.textContent="🎙️";btn.title="Голосовое сообщение";}},
     blobToDataURL(blob){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(blob);});},
 
-    async cacheFetchedAudio(messages,global,otherId){
+    async cacheFetchedAudio(messages,global,otherId,forcedScope=null){
         for(const m of messages||[]){
             if(m.type!=="audio"||!m.audio?.data||!m.audio?.id)continue;
             try{
                 const blob=await (await fetch(m.audio.data)).blob();
                 await MediaVault.put(m.audio.id,blob,m.audio.mime,m.audio.duration);
-                const key=global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId);
-                if(Number(m.authorId)!==Number(Auth.currentUser.id)) await API.audioAck(global?"global":"private",key,m.id,m.audio.id);
+                const key=forcedScope==="group"?String(otherId):global?"global":this.getPrivateChatId(Auth.currentUser.id,otherId);
+                if(Number(m.authorId)!==Number(Auth.currentUser.id)) await API.audioAck(forcedScope || (global?"global":"private"),key,m.id,m.audio.id);
             }catch(e){console.warn("Audio cache:",e);}
         }
         return messages;

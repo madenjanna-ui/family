@@ -16,9 +16,12 @@ function defaultDatabase() {
         users: [],
         globalChat: [],
         privateChats: {},
+        groups: [],
+        groupChats: {},
         sessions: {},
         reads: {},
-        presence: {}
+        presence: {},
+        settings: {maxUsers: 10}
     };
 }
 
@@ -57,9 +60,13 @@ function loadDatabase() {
         db.users ||= [];
         db.globalChat ||= [];
         db.privateChats ||= {};
+        db.groups ||= [];
+        db.groupChats ||= {};
         db.sessions ||= {};
         db.reads ||= {};
         db.presence ||= {};
+        db.settings ||= {maxUsers: 10};
+        db.settings.maxUsers = Math.max(1, Number(db.settings.maxUsers) || 10);
 
         if (db.users.length === 0) {
             db.users.push(createDefaultAdmin());
@@ -964,6 +971,20 @@ const server =
                 }
 
                 // ==========================================
+                // FAMILY SETTINGS
+                // ==========================================
+                if (req.method === "GET" && url.pathname === "/api/settings/family") {
+                    const user=authUser(req); if(!user){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+                    sendJson(res,200,{success:true,maxUsers:Math.max(1,Number(db.settings?.maxUsers)||10),usersCount:db.users.length}); return;
+                }
+                if (req.method === "PUT" && url.pathname === "/api/settings/family") {
+                    const admin=requireAdmin(req,res); if(!admin)return;
+                    const maxUsers=Math.max(1,Math.min(100,Number(body.maxUsers)||10));
+                    db.settings.maxUsers=maxUsers; saveDatabase(db);
+                    sendJson(res,200,{success:true,maxUsers,usersCount:db.users.length}); return;
+                }
+
+                // ==========================================
                 // USERS
                 // ==========================================
 
@@ -1046,19 +1067,9 @@ const server =
 
                     if (!admin) return;
 
-                    if (
-                        db.users.length >= 4
-                    ) {
-
-                        sendJson(
-                            res,
-                            400,
-                            {
-                                success: false,
-                                error:
-                                    "В семье может быть не более 4 человек"
-                            }
-                        );
+                    const maxUsers = Math.max(1, Number(db.settings?.maxUsers) || 10);
+                    if (db.users.length >= maxUsers) {
+                        sendJson(res,400,{success:false,error:`В семье может быть не более ${maxUsers} человек`});
 
                         return;
                     }
@@ -1397,6 +1408,80 @@ const server =
                 }
 
                 // ==========================================
+                // CHAT LIST FOR HOME
+                // ==========================================
+                if (req.method === "GET" && url.pathname === "/api/chats") {
+                    const user = authUser(req);
+                    if (!user) { sendJson(res,401,{success:false,error:"Не авторизован"}); return; }
+                    const chats = [];
+                    const unread = {total:0, global:0, private:{}, groups:{}};
+
+                    const globalLast = db.globalChat?.[db.globalChat.length-1];
+                    if (globalLast) {
+                        const count = unreadGlobal(user.id);
+                        chats.push({scope:"global", id:"global", name:"Семья", unread:count, lastMessage:globalLast});
+                        unread.global=count; unread.total += count;
+                    }
+
+                    for (const other of db.users) {
+                        if (Number(other.id) === Number(user.id)) continue;
+                        const key = chatId(user.id, other.id);
+                        const messages = db.privateChats?.[key] || [];
+                        if (!messages.length) continue;
+                        const count = unreadPrivate(user.id, other.id);
+                        unread.private[String(other.id)] = count;
+                        unread.total += count;
+                        chats.push({scope:"private", id:key, user:publicUser(other), unread:count, lastMessage:messages[messages.length-1]});
+                    }
+
+                    for (const group of db.groups || []) {
+                        const members = (group.memberIds || []).map(Number);
+                        if (!members.includes(Number(user.id))) continue;
+                        const messages = db.groupChats?.[String(group.id)] || [];
+                        if (!messages.length) continue;
+                        const read = Number(db.reads?.[String(user.id)]?.groups?.[String(group.id)] || 0);
+                        const count = messages.filter(m => Number(m.id)>read && Number(m.authorId)!==Number(user.id)).length;
+                        unread.groups[String(group.id)] = count;
+                        unread.total += count;
+                        chats.push({scope:"group", id:group.id, name:group.name, unread:count, lastMessage:messages[messages.length-1]});
+                    }
+
+                    chats.sort((a,b)=>new Date(b.lastMessage?.time||0)-new Date(a.lastMessage?.time||0));
+                    sendJson(res,200,{success:true,chats,unread});
+                    return;
+                }
+
+                // ==========================================
+                // GROUPS
+                // ==========================================
+                if (req.method === "GET" && url.pathname === "/api/groups") {
+                    const user=authUser(req); if(!user){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+                    const groups=(db.groups||[]).filter(g=>(g.memberIds||[]).map(Number).includes(Number(user.id))).map(g=>({...g,members:(g.memberIds||[]).map(id=>publicUser(db.users.find(u=>Number(u.id)===Number(id))||{}))}));
+                    sendJson(res,200,{success:true,groups}); return;
+                }
+
+                if (req.method === "POST" && url.pathname === "/api/groups") {
+                    const user=authUser(req); if(!user){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+                    const name=String(body.name||"").trim();
+                    const memberIds=[...new Set([Number(user.id),...(Array.isArray(body.memberIds)?body.memberIds.map(Number):[])].filter(Boolean))];
+                    if(!name){sendJson(res,400,{success:false,error:"Введите название группы"});return;}
+                    const known=memberIds.every(id=>db.users.some(u=>Number(u.id)===id));
+                    if(!known){sendJson(res,400,{success:false,error:"Некорректный участник группы"});return;}
+                    const id=nextId(db.groups||[]); const group={id,name,ownerId:Number(user.id),memberIds,createdAt:new Date().toISOString()};
+                    db.groups.push(group); db.groupChats[String(id)]=[]; saveDatabase(db);
+                    sendJson(res,201,{success:true,group:{...group,members:memberIds.map(mid=>publicUser(db.users.find(u=>Number(u.id)===mid)||{}))}}); return;
+                }
+
+                const groupMatch=url.pathname.match(/^\/api\/groups\/(\d+)$/);
+                if(groupMatch){
+                    const user=authUser(req); if(!user){sendJson(res,401,{success:false,error:"Не авторизован"});return;}
+                    const id=Number(groupMatch[1]); const group=(db.groups||[]).find(g=>Number(g.id)===id);
+                    if(!group){sendJson(res,404,{success:false,error:"Группа не найдена"});return;}
+                    if(!(group.memberIds||[]).map(Number).includes(Number(user.id))){sendJson(res,403,{success:false,error:"Нет доступа к группе"});return;}
+                    if(req.method==="GET"){const messages=db.groupChats?.[String(id)]||[];sendJson(res,200,{success:true,messages});return;}
+                }
+
+                // ==========================================
                 // UNREAD
                 // ==========================================
 
@@ -1476,7 +1561,7 @@ const server =
 
                 const readMatch =
                     url.pathname.match(
-                        /^\/api\/read\/(global|private)\/([^/]+)$/
+                        /^\/api\/read\/(global|private|group)\/([^/]+)$/
                     );
 
                 if (
@@ -1508,7 +1593,8 @@ const server =
 
                         global: 0,
 
-                        private: {}
+                        private: {},
+                        groups: {}
                     };
 
                     if (
@@ -1534,6 +1620,11 @@ const server =
                         ].global =
                             last;
 
+                    } else if (readMatch[1] === "group") {
+                        db.reads[String(user.id)].groups ||= {};
+                        const gid=decodeURIComponent(readMatch[2]);
+                        const chat=db.groupChats?.[gid] || [];
+                        db.reads[String(user.id)].groups[gid]=chat.length ? Number(chat[chat.length-1].id) : 0;
                     } else {
 
                         db.reads[
