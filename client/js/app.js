@@ -163,6 +163,21 @@ const App = {
         let data = {chats:[], unread:{global:0,private:{},groups:{}}};
         try { data = await API.chats(); } catch(e) { console.warn("Home chats:", e); }
         const chats = Array.isArray(data.chats) ? data.chats : [];
+		const privateUsers = chats
+    .filter(chat => chat.scope === "private" && chat.user)
+    .map(chat => chat.user);
+
+if (privateUsers.length) {
+    const map = new Map(this.usersCache.map(u => [Number(u.id), u]));
+
+    privateUsers.forEach(u => {
+        map.set(Number(u.id), u);
+    });
+
+    this.usersCache = [...map.values()];
+    this._usersById ||= new Map();
+    for (const u of this.usersCache) this._usersById.set(Number(u.id),u);
+}
         const totalUnread = Number(data.unread?.total || 0);
 
         const cards = chats.map(chat => {
@@ -506,16 +521,23 @@ await API.pushSubscribe(subscription.toJSON());
         const navSeq=++this.chatNavSeq;
         const me=Auth.currentUser;
         if(!me)return;
-        const cached=this.usersCache.find(u=>Number(u.id)===Number(otherId));
-        const other=cached;
-        if(!other){
-            try{
-                const users=await API.users();
-                this.usersCache=users;
-            }catch(e){console.warn("Private user:",e);return;}
+        // The home screen already hydrates usersCache from API.chats().
+        // Never block opening a chat on a second /api/users request.
+        const userMap=this._usersById ||= new Map();
+        if (Array.isArray(this.usersCache)) {
+            for (const u of this.usersCache) userMap.set(Number(u.id),u);
         }
-        const target=this.usersCache.find(u=>Number(u.id)===Number(otherId));
-        if(!target || navSeq!==this.chatNavSeq)return;
+        const target=userMap.get(Number(otherId));
+        if(!target || navSeq!==this.chatNavSeq){
+            // Only fetch users as a background fallback; do not block the UI.
+            API.users().then(users=>{
+                if(!Array.isArray(users)) return;
+                this.usersCache=users;
+                this._usersById ||= new Map();
+                for(const u of users) this._usersById.set(Number(u.id),u);
+            }).catch(e=>console.warn("Private user:",e));
+            return;
+        }
 
         this.leaveActiveChat();
         document.body.dataset.privateUser=otherId;
@@ -655,7 +677,8 @@ await API.pushSubscribe(subscription.toJSON());
 
     messageHtml(m,global,otherId){
         const mine=Number(m.authorId)===Number(Auth.currentUser.id),scope=global?"global":(this.activeChatScope==="group"?"group":"private"),key=global?"global":scope==="group"?String(otherId):this.getPrivateChatId(Auth.currentUser.id,otherId),reactions=Object.entries(m.reactions||{}).filter(([,ids])=>ids.length);
-        const authorUser=this.usersCache.find(u=>Number(u.id)===Number(m.authorId))||m;
+        this._usersById ||= new Map((this.usersCache||[]).map(u=>[Number(u.id),u]));
+        const authorUser=this._usersById.get(Number(m.authorId))||m;
         const avatar=!mine?this.avatarHtml(authorUser,34):"";
         const hasAudio=m.type==="audio"&&m.audio;
         const audioSrc=hasAudio&&m.audio.data?this.attr(m.audio.data):"";
