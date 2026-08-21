@@ -567,7 +567,26 @@ await API.pushSubscribe(subscription.toJSON());
     showReactions(btn,scope,key,id){document.querySelectorAll(".reaction-picker").forEach(x=>x.remove());const box=document.createElement("div");box.className="reaction-picker";box.innerHTML=REACTIONS.map(e=>`<button onclick="App.react('${scope}','${key}',${id},'${e}');this.parentElement.remove()">${e}</button>`).join("");btn.parentElement.appendChild(box);},
     async react(scope,key,id,emoji){try{await API.react(scope,key,id,emoji);}catch(e){alert(e.message);}},
 
-    sendCallSignal(payload){if(this.ws&&this.ws.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify(payload));},
+  sendCallSignal(payload){
+    console.log("📞 CALL SIGNAL:", payload);
+
+    if(!this.ws){
+        console.error("📞 WebSocket отсутствует");
+        return false;
+    }
+
+    if(this.ws.readyState !== WebSocket.OPEN){
+        console.error(
+            "📞 WebSocket не открыт. Состояние:",
+            this.ws.readyState
+        );
+        return false;
+    }
+
+    this.ws.send(JSON.stringify(payload));
+    console.log("📞 CALL SIGNAL SENT");
+    return true;
+},
     async startCall(targetId,video=false,global=false){
         if(global){alert("Групповые звонки сделаем отдельным этапом. Сейчас доступны личные звонки.");return;}
         if(!targetId)return;
