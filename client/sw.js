@@ -1,13 +1,13 @@
-const CACHE = "family-shell-v6-2-3";
+const CACHE = "family-shell-v13-1";
 const SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./css/style.css?v=23",
+  "./css/style.css?v=13",
   "./js/config.js?v=3",
-  "./js/api.js?v=24",
+  "./js/api.js?v=13",
   "./js/auth.js?v=10",
-  "./js/app.js?v=24",
+  "./js/app.js?v=13",
   "./assets/icon-180.png",
   "./assets/icon-512.png",
   "./js/media.js?v=2"

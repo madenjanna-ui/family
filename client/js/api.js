@@ -35,9 +35,11 @@ const API = {
     async globalMessages() { return (await this.request("/api/messages/global")).messages; },
     async sendGlobal(text,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
     async sendGlobalAudio(audio,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({audio,replyTo})})).message; },
+    async sendGlobalMedia(media,replyTo=null) { return (await this.request("/api/messages/global",{method:"POST",body:JSON.stringify({media,replyTo})})).message; },
     async privateMessages(id) { return (await this.request(`/api/messages/private/${id}`)).messages; },
     async sendPrivate(id,text,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({text,replyTo})})).message; },
     async sendPrivateAudio(id,audio,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({audio,replyTo})})).message; },
+    async sendPrivateMedia(id,media,replyTo=null) { return (await this.request(`/api/messages/private/${id}`,{method:"POST",body:JSON.stringify({media,replyTo})})).message; },
     async audioAck(scope,key,messageId,audioId) {
         return this.request(`/api/audio/ack`,{method:"POST",body:JSON.stringify({scope,key,messageId,audioId})});
     },
