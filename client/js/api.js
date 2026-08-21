@@ -109,6 +109,6 @@ const API = {
     this.ws = ws;
 
     return ws;
-}
+
     }
 };
