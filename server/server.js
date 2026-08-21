@@ -1874,7 +1874,9 @@ const server =
                         if (body.replyTo?.id) message.replyTo = {id:Number(body.replyTo.id),author:String(body.replyTo.author||""),text:String(body.replyTo.text||"")};
                         if (message.type === "audio" || message.type === "photo" || message.type === "video") message[message.type === "audio" ? "audio" : "media"].pending = [other.id];
                         db.privateChats[id].push(message); saveDatabase(db);
-                        broadcast({type:"private_message",chatId:id,message});
+                        // Private message: deliver only to the two participants, never to every connected user.
+                        sendToUserSockets(user.id, {type:"private_message",chatId:id,message});
+                        sendToUserSockets(other.id, {type:"private_message",chatId:id,message});
                         if (!isChatActive(Number(other.id),"private",id)) {
                         void sendPushToUsers([other.id], {title:`💌 ${user.name}`,body:message.type==="audio"?"🎙️ Голосовое сообщение":message.type==="photo"?"📷 Фото":message.type==="video"?"🎥 Видео":message.text,url:"./",tag:`family-private-${id}`,scope:"private",chatId:id});
                     }
